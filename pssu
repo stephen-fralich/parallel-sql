@@ -1,0 +1,282 @@
+#!/usr/bin/perl
+
+my $dbconf = '/sw/local/etc/pssu_admin_db.conf';
+my $valid_setname_chars = 'a-zA-Z0-9';
+my $max_setname_chars = 25;
+my $max_sets = 10;
+
+use DBI;
+use Getopt::Long;
+
+GetOptions("create-set=s" => \$create_set,
+           "del-set=s" => \$del_set,
+           "initial" => \$initial,
+           "y" => \$yes,
+          ) || &HELP_MESSAGE();
+
+my $running_user = $ENV{SUDO_USER};
+if(! $running_user) { die "pssu must be run using sudo:  sudo pssu <options>\n"; }
+
+if(not open(CONF, "<", $dbconf)) {
+  die "pssu must be run using sudo: cannot database config file `$dbconf': $!\n";
+}
+my $host;
+my $pass;
+my $user;
+my $database;
+while(<CONF>) {
+  chomp;
+  my($key,$data) = split(/=/);
+  if($key eq "user") { $user = $data; }
+  if($key eq "pass") { $pass = $data; }
+  if($key eq "host") { $host = $data; }
+  if($key eq "database") { $database = $data; }
+}
+close(CONF);
+
+my $gdbh = DBI->connect("DBI:Pg:database=$database;host=$host",
+                        $user, $pass, {'RaiseError' => 2, AutoCommit => 0});
+my $table = $running_user;
+if($set) { $table = $running_user.$set; }
+
+if($create_set) { &create_set($gdbh,$create_set); }
+elsif($del_set) { &del_set($gdbh,$del_set); }
+elsif($initial) { &initial($gdbh,$running_user); }
+else { &HELP_MESSAGE(); }
+
+$gdbh->disconnect();
+
+sub create_set {
+  my $dbh = shift;
+  my $setname = shift;
+  &check_str($setname);
+  my $table;
+  $table = $running_user.$setname;
+  my $set_count = &count_sets($dbh);
+  if($set_count >= $max_sets) { print "Max set count $max_sets reached\n"; return 1; }
+  my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
+  my $index_name = $table.'_status_hash';
+  my $create_index = "CREATE INDEX $index_name ON $table USING hash (status)";
+  my $set_owner = "ALTER TABLE $table OWNER TO $running_user";
+  my $sth_create = $dbh->prepare($create_table);
+  $sth_create->execute();
+  my $sth_create_idx = $dbh->prepare($create_index);
+  $sth_create_idx->execute();
+  my $sth_alter = $dbh->prepare($set_owner);
+  $sth_alter->execute();
+  $dbh->do("COMMIT");
+}
+
+sub initial {
+  my $dbh = shift;
+  my $table = shift;
+  my ($name,$passwd,$uid,$gid,
+      $quota,$comment,$gcos,$homedir,$shell,$expire) = getpwnam($table);
+  my $dbconf = $homedir . "/.parallel/db.conf";
+  if(-e $dbconf) { die "Exiting, configuration file exists: $dbconf\n"; }
+  my $password = generatePassword(15,"Aan");
+  open(DBCONF, '>', $dbconf) ||
+    die "Cannot open configuration file $db_config for writing: $!\n";
+  print DBCONF "user=$table\n";
+  print DBCONF "pass=$password\n";
+  print DBCONF "host=paralleldb";
+  close DBCONF;
+  my $uid = getpwnam($table);
+  chown $uid, 15, $dbconf;
+  chmod 0400, $dbconf;
+  my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
+  my $sth_create_t = $dbh->prepare($create_table);
+  $sth_create_t->execute();
+  my $index_name = $table.'_status_hash';
+  my $create_index = "CREATE INDEX $index_name ON $table USING hash (status)";
+  my $sth_create_i = $dbh->prepare($create_index);
+  $sth_create_i->execute();
+  my $create_role = "CREATE ROLE $table WITH LOGIN PASSWORD '$password'";
+  my $sth_create_r = $dbh->prepare($create_role);
+  $sth_create_r->execute();
+  my $grant_role = "GRANT $table TO parallel_admin";
+  my $sth_grant_r = $dbh->prepare($grant_role);
+  $sth_grant_r->execute();
+  my $alter_owner = "ALTER TABLE $table OWNER TO $table";
+  my $sth_alter_o = $dbh->prepare($alter_owner);
+  $sth_alter_o->execute();
+  $dbh->do("COMMIT");
+}
+
+
+sub del_set {
+  my $dbh = shift;
+  my $setname = shift;
+  &check_str($setname);
+  my $table;
+  $table = $running_user.$setname;
+  if(! $yes) {
+    print "Are you sure you want to delete set '$setname' (Y/n)? ";
+    my $ans = <STDIN>;
+    chomp $ans;
+    if($ans !~ /Y.*/) { exit 0; }
+  }
+  my $del_table = "DROP TABLE $table";
+  my $sth_del = $dbh->prepare($del_table);
+  $sth_del->execute();
+  $dbh->do("COMMIT");
+}
+
+sub check_str {
+  my $sanstr = shift;
+  $sanstr =~ s/[^$valid_setname_chars]/\#/go;
+  if ($sanstr =~ /\#/ || length($sanstr) > $max_setname_chars) {
+    print "Input is either > $max_setname_chars long or contains illegal characters\n";
+    print "Allowed characters: $valid_setname_chars\n";
+    exit 1;
+  }
+}
+
+sub count_sets {
+  my $dbh = shift;
+  my $select_sql = "SELECT relname FROM pg_class c WHERE c.relkind = 'r'";
+  my $sth = $dbh->prepare($select_sql);
+  $sth->execute() or die $DBI::errstr;
+  while(my ($name) = $sth->fetchrow_array()) {
+    next if $name !~ /$running_user.+/;
+    push @sets, $name;
+  }
+  return scalar(@sets);
+}
+
+
+sub HELP_MESSAGE() {
+  print "Usage: pssu [SINGLE ACTION]\n";
+  print "  ACTIONS\n";
+  print "    --initial                 setup initial parallel_sql default table\n";
+  print "    --create-set <setname>    create a new set with the given set name\n";
+  print "    --del-set <setname>       delete a set with a given name (add -y for no prompt)\n";
+  exit 0;
+}
+
+###############################################################################
+# passwd_gen.pl v2.0
+#
+# AUTHORS:
+# * Blurred Vision (blurred.vision<@>bigpond.dot.com)
+# * mr_visible (mrvisble<@>gmail.dot.com)
+#
+# Released under the terms and conditions of the GNU General Public 
+# License (http://gnu.org).
+###############################################################################
+
+sub generatePassword
+{
+        my $passLength = shift;
+        my $passScheme = shift;
+        my @SYMBOL_CHARS = ('!', '@', '#', '$', '%', '+', '=', ',', '.');
+        my @SYMBOL_EXT_CHARS = ('%', '^', '&', '*', '(', ')', '-', '_', '|', '\\', "'", '{', '[', '}', ']', ':', ';', '"', '<', '>',
+ '?', '/', '~', '`');
+
+        my $password;
+        my %charGroupCnt;
+        my @randChars;
+        
+        # For each character group, work out how many characters of that group to generate. First, we set each
+        # character group count to a random number that doesn't exceed (total pass length / number of character
+        # groups). It has to be at least 1 for to meet complexity requirements. 
+        $charGroupCnt{'charlc'} = ($passScheme =~ /a/ ? int(1 + rand($passLength / length($passScheme))) : 0);
+        $charGroupCnt{'charuc'} = ($passScheme =~ /A/ ? int(1 + rand($passLength / length($passScheme))) : 0);
+        $charGroupCnt{'number'} = ($passScheme =~ /n/ ? int(1 + rand($passLength / length($passScheme))) : 0);
+        $charGroupCnt{'symbol'} = ($passScheme =~ /s/ ? int(1 + rand($passLength / length($passScheme))) : 0);
+        $charGroupCnt{'extsym'} = ($passScheme =~ /e/ ? int(1 + rand($passLength / length($passScheme))) : 0);
+        
+        # OK, so now each character group has a random proportion that is less than or equal to the minimum
+        # specified password length. So, we keep incrementing a random character group count by one while the
+        # total length is less than specified minimum length.
+        while (sumHashVals(\%charGroupCnt) < $passLength)
+        {
+                %charGroupCnt = randIncHashVal(\%charGroupCnt);
+        };
+        
+        # Generate the random chacters for each character group. Just tack them on the end of an array.
+        push @randChars, getRandArrayEles(['a' .. 'z'], $charGroupCnt{'charlc'}) if ($passScheme =~ /a/);
+        push @randChars, getRandArrayEles(['A' .. 'Z'], $charGroupCnt{'charuc'}) if ($passScheme =~ /A/);
+        push @randChars, getRandArrayEles([0 .. 9], $charGroupCnt{'number'}) if ($passScheme =~ /n/);
+        push @randChars, getRandArrayEles(\@SYMBOL_CHARS, $charGroupCnt{'symbol'}) if ($passScheme =~ /s/);
+        push @randChars, getRandArrayEles(\@SYMBOL_EXT_CHARS, $charGroupCnt{'extsym'}) if ($passScheme =~ /e/);
+        
+        # Make the password string
+        $password = join("", @randChars);
+        
+        # Randomise the characters in the password (as they were tacked on in a specific order earlier) 
+        $password = randStr($password); 
+        
+        return $password;
+}
+
+sub sumHashVals
+{
+        my $hashRef = shift;
+        my $sum;
+        my $key;
+        
+        my $sum = 0;
+        foreach $key (values %$hashRef)
+        {
+                $sum += $key;
+        }
+        
+        return $sum;
+}
+
+sub getRandArrayEles
+{
+        my $charArrRef = shift;
+        my @charArr = @$charArrRef;
+        my $num = shift;
+        my @eles;
+        
+        @eles = @charArr[ map { rand @charArr } \ ( 1 .. $num ) ];
+        
+        return @eles;
+}
+
+# NOTE: Only increments if value is > 0
+sub randIncHashVal
+{
+        my $hashRef = shift;
+        my %hash = %$hashRef;
+        my $keyIndToInc;
+        my $ind;
+        my $key;
+        
+        $keyIndToInc = int(rand(scalar(keys %hash)));
+        $ind = 0;
+        foreach $key (keys %hash)
+        {
+                if ($ind == $keyIndToInc)
+                {
+                        $hash{$key} ++ if ($hash{$key} > 0);
+                        return %hash;
+                }
+                $ind ++;
+        }
+        
+        return %hash;
+}
+
+sub randStr
+{
+        my $str = shift;
+        my $i;
+        my %order;
+        my $randStr;
+        
+        for ($i = 0; $i < length($str); $i ++)
+        {
+                $order{$i} = rand;
+        }
+        
+        foreach $i (sort {$order{$a} <=> $order{$b}} keys %order)
+        {
+                $randStr .= substr($str, $i, 1);
+        }
+        
+        return $randStr;
+}
