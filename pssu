@@ -75,15 +75,6 @@ sub initial {
   my $dbconf = $homedir . "/.parallel/db.conf";
   if(-e $dbconf) { die "Exiting, configuration file exists: $dbconf\n"; }
   my $password = generatePassword(15,"Aan");
-  open(DBCONF, '>', $dbconf) ||
-    die "Cannot open configuration file $db_config for writing: $!\n";
-  print DBCONF "user=$table\n";
-  print DBCONF "pass=$password\n";
-  print DBCONF "host=paralleldb";
-  close DBCONF;
-  my $uid = getpwnam($table);
-  chown $uid, 15, $dbconf;
-  chmod 0400, $dbconf;
   my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
   my $sth_create_t = $dbh->prepare($create_table);
   $sth_create_t->execute();
@@ -101,6 +92,19 @@ sub initial {
   my $sth_alter_o = $dbh->prepare($alter_owner);
   $sth_alter_o->execute();
   $dbh->do("COMMIT");
+  my $uid = getpwnam($table);
+  if(! $homedir."/.parallel") {
+    mkdir $homedir."/.parallel", 0700;
+    chown $uid, 15, $homedir."/.parallel";
+  }  
+  open(DBCONF, '>', $dbconf) ||
+    die "Cannot open configuration file $db_config for writing: $!\n";
+  print DBCONF "user=$table\n";
+  print DBCONF "pass=$password\n";
+  print DBCONF "host=paralleldb";
+  close DBCONF;
+  chown $uid, 15, $dbconf;
+  chmod 0400, $dbconf;
 }
 
 
