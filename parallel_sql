@@ -3,7 +3,7 @@
 # Copyright (C) 2007,2008,2009,2010,2011,2012,2013,2014 Ole Tange and
 # Free Software Foundation, Inc.
 #
-# Copyright (C) 2014 Stephen Fralich and the University of Washington
+# Copyright (C) 2014,2015 Stephen Fralich and University of Washington
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -739,7 +739,7 @@ sub get_options_from_array {
 sub parse_options {
     # Returns: N/A
     # Defaults:
-    $Global::version = '20140922-sql';
+    $Global::version = '20140922-sql-20150716';
     $Global::progname = 'parallel';
     $Global::infinity = 2**31;
     $Global::debug = 0;
@@ -1023,6 +1023,7 @@ sub parse_options {
         if(defined $opt::progress) { ::error("--eta, --bar, --progress cannot be used with --sql\n"); ::wait_and_exit(255); }
         if($opt::resume or $opt::resume_failed) { ::error("--resume and --resume-failed cannot be used with --sql\n"); ::wait_and_exit(255); }
         if(@Global::sshlogin) { ::error("--sql does not work with ssh logins\n"); ::wait_and_exit(255); }
+        $Global::sql_retry = 30;
     }
     if($Global::sqlstats) {
 	use Time::HiRes;
@@ -1600,6 +1601,49 @@ sub enough_file_handles {
     }
 }
 
+# sql
+sub parallel_sql_connect {
+	my $file = shift;
+	my $dbconf = $ENV{'HOME'} . "/.parallel/db.conf";
+    if($Global::sql) {
+	if(not open(CONF, "<", $dbconf)) {
+	    ::error("Cannot read database config file `$dbconf': $!\n");
+	    wait_and_exit(255);
+	}
+	while(<CONF>) {
+	    chomp;
+	    my($key,$data) = split(/=/);
+	    if($key eq "user") { $Global::sql_user = $data; }
+	    if($key eq "pass") { $Global::sql_pass = $data; }
+	    if($key eq "host") { $Global::sql_host = $data; }
+	}
+	close(CONF);
+	$Global::sql_db = $file;
+	my $dbh = DBI->connect("DBI:Pg:database=$Global::sql_db;host=$Global::sql_host",
+					$Global::sql_user, $Global::sql_pass, {RaiseError => 1, AutoCommit => 0});
+	return $dbh;
+    }
+}
+
+sub parallel_sql_reconnect {
+	eval {
+		$Global::sql_dbh->disconnect();
+	};
+	my $dbh;
+	::debug("run","Trying to reconnect ...\n");
+	eval {
+		$dbh = DBI->connect("DBI:Pg:database=$Global::sql_db;host=$Global::sql_host",
+					$Global::sql_user, $Global::sql_pass, {RaiseError => 1, AutoCommit => 0});
+	};
+	if($@ ne '') {
+		sleep $Global::sql_retry;
+		$dbh = parallel_sql_reconnect();
+	}
+	$Global::sql_dbh = $dbh;
+	return $dbh;
+}
+# /sql
+
 sub open_or_exit {
     # Open a file name or exit if the file cannot be opened
     # Inputs:
@@ -1608,26 +1652,10 @@ sub open_or_exit {
     #   $fh = file handle to read-opened file
     my $file = shift;
     # sql
-    my $dbconf = $ENV{'HOME'} . "/.parallel/db.conf";
     if($Global::sql) {
-	if(not open(CONF, "<", $dbconf)) {
-	    ::error("Cannot database config file `$dbconf': $!\n");
-	    wait_and_exit(255);
-	}
-	my $host;
-	my $pass;
-	my $user;
-	while(<CONF>) {
-	    chomp;
-	    my($key,$data) = split(/=/);
-	    if($key eq "user") { $user = $data; }
-	    if($key eq "pass") { $pass = $data; }
-	    if($key eq "host") { $host = $data; }
-	}
-	close(CONF);
-	my $dbh = DBI->connect("DBI:Pg:database=$file;host=$host",
-			       $user, $pass, {RaiseError => 1, AutoCommit => 0});
-	return $dbh;
+    	my $dbh = parallel_sql_connect($file);
+    	$Global::sql_dbh = $dbh;
+		return $dbh;
     }
     # /sql
     if($file eq "-") {
@@ -1804,7 +1832,7 @@ sub start_another_job {
             if($termcaught) { ::exit_on_term(); }
             $SIG{TERM} = $orig_term;
             # /sql
-	    return 0;
+	    	return 0;
         } else {
             my $job;
 	    # Skip jobs already in job log
@@ -1830,9 +1858,9 @@ sub start_another_job {
 		if($opt::pipe) {
 		    push(@Global::virgin_jobs,$job);
 		}
+				# sql
                 debug("start", "Started as seq ", $job->seq(),
 		      " pid:", $job->pid(), " rowid:", $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'}, "\n");
-                # sql
                 if($termcaught) { ::exit_on_term(); }
                 $SIG{TERM} = $orig_term;
                 # /sql
@@ -2644,24 +2672,24 @@ sub exit_on_term {
     $SIG{CHLD} = "IGNORE";
     my @rowid_updates = ();
     if($Global::sql) {
-	for my $job (values %Global::running) {
-	    my $row_id = $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'};
-	    ::debug("run","**** $row_id rowid is running\n");
-	    push @rowid_updates, $row_id;
-	}
-	foreach my $arg_array_r (@{$Global::JobQueue->{'commandlinequeue'}->{'arg_queue'}->{'arg_sub_queue'}->{'unget'}}) {
-	    foreach my $arg (@{$arg_array_r}) {
-		my $row_id = $arg->{'row_id'};
-		::debug("run","**** $row_id rowid is in the unget queue\n");
-		push @rowid_updates, $row_id;
-	    }
-	}
-    	my $dbh = $Global::JobQueue->{'commandlinequeue'}->{'arg_queue'}->{'arg_sub_queue'}->{'fhs'}[0];
+		for my $job (values %Global::running) {
+	    	my $row_id = $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'};
+	    	::debug("run","**** $row_id rowid is running\n");
+	    	push @rowid_updates, $row_id;
+		}
+		foreach my $arg_array_r (@{$Global::JobQueue->{'commandlinequeue'}->{'arg_queue'}->{'arg_sub_queue'}->{'unget'}}) {
+	    	foreach my $arg (@{$arg_array_r}) {
+				my $row_id = $arg->{'row_id'};
+				::debug("run","**** $row_id rowid is in the unget queue\n");
+				push @rowid_updates, $row_id;
+	    	}
+		}
+    	my $dbh = $Global::sql_dbh;
         my @rowid_sort = sort {$a <=> $b} @rowid_updates;
     	set_sql_status_zero($dbh,@rowid_sort);
     }
     for my $job (values %Global::running) {
-	$job->kill("KILL");
+		$job->kill("KILL");
     }
     wait_and_exit(0);
 }
@@ -2727,17 +2755,27 @@ sub reaper {
 	    push @Global::slots, $job->slot();
 	    # sql
 	    if($Global::sql) {
-		my $dbh = $job->{'commandline'}->{'arg_queue'}->{'arg_sub_queue'}->{'fhs'}[0];
-		my $table;
-		if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
-		else { $table = $dbh->{Username}; }
-		my $row_id = $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'};
-		my $update_sql = "UPDATE $table SET status = 2, finish_ts = ?, return_code=? WHERE rowid = ?";
-		my $sth = $dbh->prepare($update_sql);
-		my $unix_time = time;
-		my $rv = $sth->execute($unix_time,$job->exitstatus(),$row_id);
-		$dbh->do("COMMIT") or die $dbh->errstr;
-		my $sjf4_arg = $job->{'commandline'}->{'arg_list'}[0][0]->{'orig'};
+			my $dbh = $Global::sql_dbh;
+			my $table;
+			if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
+			else { $table = $dbh->{Username}; }
+			my $row_id = $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'};
+			my $sql_done = 0;
+			while ($sql_done != 1) {
+				eval {
+					my $update_sql = "UPDATE $table SET status = 2, finish_ts = ?, return_code=? WHERE rowid = ?";
+					my $sth = $dbh->prepare($update_sql);
+					my $unix_time = time;
+					my $rv = $sth->execute($unix_time,$job->exitstatus(),$row_id);
+					$dbh->do("COMMIT") or die $dbh->errstr;
+				};
+				if($@ ne '') {
+					sleep $Global::sql_retry;
+					$dbh = parallel_sql_reconnect();
+				} else {
+					$sql_done = 1;
+				}
+			}
 	    }
 	    # /sql
 	    if($opt::timeout) {
@@ -2853,7 +2891,8 @@ sub wait_and_exit {
     wait();
     # sql
     if($Global::sql) {
-	my $dbh = $Global::JobQueue->{'commandlinequeue'}->{'arg_queue'}->{'arg_sub_queue'}->{'fhs'}[0];
+	#my $dbh = $Global::JobQueue->{'commandlinequeue'}->{'arg_queue'}->{'arg_sub_queue'}->{'fhs'}[0];
+	my $dbh = $Global::sql_dbh;
 	$dbh->disconnect();
     }
     exit($error);
@@ -2971,7 +3010,7 @@ sub version {
     print join("\n",
                "GNU $Global::progname $Global::version",
                "Copyright (C) 2007,2008,2009,2010,2011,2012,2013,2014 Ole Tange and Free Software Foundation, Inc.",
-               "Copyright (C) 2014 Stephen Fralich",
+               "Copyright (C) 2014,2015 Stephen Fralich and University of Washington",
                "License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>",
                "This is free software: you are free to change and redistribute it.",
                "GNU $Global::progname comes with no warranty.",
@@ -7201,8 +7240,8 @@ sub empty {
 	    my $termcaught = 0;
 	    my $orig_term = $SIG{TERM};
 	    $SIG{TERM} = sub {
-		::debug("run", "******* TERM received waiting for end of critical code in empty\n");
-		$termcaught = 1;
+			::debug("run", "******* TERM received waiting for end of critical code in empty\n");
+			$termcaught = 1;
 	    };
 	    my $sql_ret = $self->get();
 	    if($sql_ret) {
@@ -7218,7 +7257,7 @@ sub empty {
 	} else {
 	    # /sql
 	    $empty &&= eof($fh);
-	    # sql
+	# sql
 	}
 	# /sql
     }
@@ -7337,50 +7376,56 @@ sub nest_get {
 sub read_sql_arg_from_fh {
     my $dbh = shift;
     my $try = shift;
-    my $max_tries = 3;
+    my $max_tries = 5;
     my $min_us = 10;
     my $max_us = 50;
     my $trans_pre;
     if($Global::sqlstats) {
-	$trans_pre = [Time::HiRes::gettimeofday];
+		$trans_pre = [Time::HiRes::gettimeofday];
     }
     my $command;
     my $row_id;
     my $table;
     if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
     else { $table = $dbh->{Username}; }
-    eval {
-	my $select_sql = "SELECT rowid,command FROM $table WHERE status = 0 LIMIT 1 FOR UPDATE";
-	my $sth = $dbh->prepare($select_sql);
-	$sth->execute();
-	my $return_ref = $sth->fetchrow_arrayref();
-	$command = ${$return_ref}[1];
-	$row_id = ${$return_ref}[0];
-	my $unix_time = time;
-	if($ENV{'PBS_JOBID'}) {
-	    my $update_sql = "UPDATE $table SET status = 1, get_ts = ?, sched_id = ? WHERE rowid = ?";
-	    my $sth = $dbh->prepare($update_sql);
-	    my $rv = $sth->execute($unix_time,$ENV{'PBS_JOBID'},$row_id);
-	} else {
-	    my $update_sql = "UPDATE $table SET status = 1, get_ts = ? WHERE rowid = ?";
-	    my $sth = $dbh->prepare($update_sql);
-	    my $rv = $sth->execute($unix_time,$row_id);
-	}
-	$dbh->do("COMMIT") or die $dbh->errstr;
-    };
-    if($@ ne '') {
-	if($@ =~ /.*deadlock detected.*/) {
-            $try++;
-            if($try >= $max_tries) { ::error("Deadlock detection handling failed after $try times: $@"); ::wait_and_exit(255); }
-            ::usleep(int(rand(($max_us - $min_us) + 1)) + $min_us);
-            ($command,$row_id) = read_sql_arg_from_fh($dbh,$try+1);
-	} else {
-            die $@;
-	}
+    my $sql_done = 0;
+    while($sql_done != 1) {
+    	eval {
+			my $select_sql = "SELECT rowid,command FROM $table WHERE status = 0 LIMIT 1 FOR UPDATE";
+			my $sth = $dbh->prepare($select_sql);
+			$sth->execute();
+			my $return_ref = $sth->fetchrow_arrayref();
+			$command = ${$return_ref}[1];
+			$row_id = ${$return_ref}[0];
+			my $unix_time = time;
+			if($ENV{'PBS_JOBID'}) {
+	    		my $update_sql = "UPDATE $table SET status = 1, get_ts = ?, sched_id = ? WHERE rowid = ?";
+	    		my $sth = $dbh->prepare($update_sql);
+	    		my $rv = $sth->execute($unix_time,$ENV{'PBS_JOBID'},$row_id);
+			} else {
+	    		my $update_sql = "UPDATE $table SET status = 1, get_ts = ? WHERE rowid = ?";
+	    		my $sth = $dbh->prepare($update_sql);
+	    		my $rv = $sth->execute($unix_time,$row_id);
+			}
+			$dbh->do("COMMIT") or die $dbh->errstr;
+    	};
+    	if($@ ne '') {
+			if($@ =~ /.*deadlock detected.*/) {
+    			$try++;
+    			if($try >= $max_tries) { ::error("Deadlock detection handling failed after $try times: $@"); ::wait_and_exit(255); }
+        		::usleep(int(rand(($max_us - $min_us) + 1)) + $min_us);
+        		($command,$row_id) = read_sql_arg_from_fh($Global::sql_dbh,$try+1);
+			} else {
+				sleep $Global::sql_retry;
+				$dbh = ::parallel_sql_reconnect();
+			}
+    	} else {
+			$sql_done = 1;
+		}
     }
     if($Global::sqlstats) {
-	my $trans_diff = Time::HiRes::tv_interval($trans_pre) * 1000;
-	push @Global::sqlstats_pickup, $trans_diff;
+		my $trans_diff = Time::HiRes::tv_interval($trans_pre) * 1000;
+		push @Global::sqlstats_pickup, $trans_diff;
     }
     return($command,$row_id);
 }
@@ -7411,7 +7456,7 @@ sub read_arg_from_fh {
 	    }
 	# sql
 	} else {
-	    ($arg,$row_id) = read_sql_arg_from_fh($fh,1);
+	    ($arg,$row_id) = read_sql_arg_from_fh($Global::sql_dbh,1);
 	}
 	# /sql
 	::debug("run", "**** read $arg with rowid $row_id\n");
@@ -7449,7 +7494,7 @@ sub read_arg_from_fh {
 	# sql
 	##return Arg->new($arg);
 	return Arg->new($arg,$row_id);
-	# /sqitedb
+	# /sql
     } else {
 	# sql
 	##::die_bug("multiread arg undefined");
