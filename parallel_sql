@@ -143,10 +143,10 @@ if($Global::semaphore) {
 }
 # sql
 if($Global::exitonterm) {
-    $SIG{TERM} = \&exit_on_term;
+	$SIG{TERM} = \&exit_on_term;
 } else {
 # /sql
-    $SIG{TERM} = \&start_no_new_jobs;
+	$SIG{TERM} = \&start_no_new_jobs;
 # sql
 }
 # /sql
@@ -572,7 +572,8 @@ sub options_hash {
 	 "sql" => \$opt::sql,
 	 "exit-on-term" => \$opt::exitonterm,
 	 "sql-stats" => \$opt::sqlstats,
-         "sql-set=s" => \$opt::sqlset,
+	 "sql-set=s" => \$opt::sqlset,
+	 "sql-noretry" => \$opt::sqlnoretry,
 	 # /sql
 	 #"silent-error|silenterror" => \$opt::silent_error,
 	 "keep-order|keeporder|k" => \$opt::keeporder,
@@ -739,7 +740,7 @@ sub get_options_from_array {
 sub parse_options {
     # Returns: N/A
     # Defaults:
-    $Global::version = '20140922-sql-20150716';
+    $Global::version = '20140922-sql-20150721';
     $Global::progname = 'parallel';
     $Global::infinity = 2**31;
     $Global::debug = 0;
@@ -809,6 +810,7 @@ sub parse_options {
     if(defined $opt::exitonterm) { $Global::exitonterm = 1; }
     if(defined $opt::sqlstats) { $Global::sqlstats = 1; }
     if(defined $opt::sqlset) { $Global::sqlset = $opt::sqlset; }
+    if(defined $opt::sqlnoretry) { $Global::sqlnoretry = 1; }
     # /sql
     # Deal with --rpl
     sub rpl {
@@ -1017,17 +1019,30 @@ sub parse_options {
     }
     # sql
     if($Global::sql) {
-        use DBI;
-        ::debug("init","Using sql\n");
-        if(scalar(@opt::a) > 1) { ::error("only one -a argument is allowed with --sql\n"); ::wait_and_exit(255); }
-        if(defined $opt::progress) { ::error("--eta, --bar, --progress cannot be used with --sql\n"); ::wait_and_exit(255); }
-        if($opt::resume or $opt::resume_failed) { ::error("--resume and --resume-failed cannot be used with --sql\n"); ::wait_and_exit(255); }
-        if(@Global::sshlogin) { ::error("--sql does not work with ssh logins\n"); ::wait_and_exit(255); }
-        $Global::sql_retry = 30;
+    	eval "use DBI;";
+    	if($@) {
+    		::error("DBI module must be installed if using --sql\n"); ::wait_and_exit(255); 
+    	}
+    	::debug("init","Using sql\n");
+    	$Global::sql_retry = 30; # seconds
+    	if(scalar(@opt::a) > 1) { ::error("only one -a argument is allowed with --sql\n"); ::wait_and_exit(255); }
+    	if(defined $opt::progress) { ::error("--eta, --bar, --progress cannot be used with --sql\n"); ::wait_and_exit(255); }
+    	if($opt::resume or $opt::resume_failed) { ::error("--resume and --resume-failed cannot be used with --sql\n"); ::wait_and_exit(255); }
+    	if(@Global::sshlogin) { ::error("--sql does not work with ssh logins\n"); ::wait_and_exit(255); }
     }
     if($Global::sqlstats) {
-	use Time::HiRes;
-	use List::Util;
+    	if(! $Global::sql) { ::error("Option --sql-stats cannot be used with --sql\n"); ::wait_and_exit(255); }
+    	eval "use Time::HiRes;";
+    	if($@) {
+    		::error("Time::HiRes module must be installed if using --sql-stats\n"); ::wait_and_exit(255); 
+    	}
+    	eval "use List::Util;";
+    	if($@) {
+    		::error("List::Util module must be installed if using --sqlstats\n"); ::wait_and_exit(255); 
+    	}
+    }
+    if($Global::sqlnoretry) {
+    	if(! $Global::sql) { ::error("Option --sql-noretry cannot be used with --sql\n"); ::wait_and_exit(255); }
     }
     # /sql
     citation_notice();
@@ -1605,38 +1620,38 @@ sub enough_file_handles {
 sub parallel_sql_connect {
 	my $file = shift;
 	my $dbconf = $ENV{'HOME'} . "/.parallel/db.conf";
-    if($Global::sql) {
-	if(not open(CONF, "<", $dbconf)) {
-	    ::error("Cannot read database config file `$dbconf': $!\n");
-	    wait_and_exit(255);
+	if($Global::sql) {
+		if(not open(CONF, "<", $dbconf)) {
+			::error("Cannot read database config file `$dbconf': $!\n");
+			wait_and_exit(255);
+		}
+		while(<CONF>) {
+			chomp;
+			my($key,$data) = split(/=/);
+			if($key eq "user") { $Global::sql_user = $data; }
+			if($key eq "pass") { $Global::sql_pass = $data; }
+			if($key eq "host") { $Global::sql_host = $data; }
+		}
+		close(CONF);
+		$Global::sql_db = $file;
+		my $dbh = DBI->connect("DBI:Pg:database=$Global::sql_db;host=$Global::sql_host",
+			$Global::sql_user, $Global::sql_pass, {RaiseError => 1, AutoCommit => 0});
+		return $dbh;
 	}
-	while(<CONF>) {
-	    chomp;
-	    my($key,$data) = split(/=/);
-	    if($key eq "user") { $Global::sql_user = $data; }
-	    if($key eq "pass") { $Global::sql_pass = $data; }
-	    if($key eq "host") { $Global::sql_host = $data; }
-	}
-	close(CONF);
-	$Global::sql_db = $file;
-	my $dbh = DBI->connect("DBI:Pg:database=$Global::sql_db;host=$Global::sql_host",
-					$Global::sql_user, $Global::sql_pass, {RaiseError => 1, AutoCommit => 0});
-	return $dbh;
-    }
 }
 
 sub parallel_sql_reconnect {
 	eval {
 		$Global::sql_dbh->disconnect();
 	};
+	sleep $Global::sql_retry;
 	my $dbh;
 	::debug("run","Trying to reconnect ...\n");
 	eval {
 		$dbh = DBI->connect("DBI:Pg:database=$Global::sql_db;host=$Global::sql_host",
-					$Global::sql_user, $Global::sql_pass, {RaiseError => 1, AutoCommit => 0});
+			$Global::sql_user, $Global::sql_pass, {RaiseError => 1, AutoCommit => 0});
 	};
 	if($@ ne '') {
-		sleep $Global::sql_retry;
 		$dbh = parallel_sql_reconnect();
 	}
 	$Global::sql_dbh = $dbh;
@@ -1653,9 +1668,8 @@ sub open_or_exit {
     my $file = shift;
     # sql
     if($Global::sql) {
-    	my $dbh = parallel_sql_connect($file);
-    	$Global::sql_dbh = $dbh;
-		return $dbh;
+    	$Global::sql_dbh = parallel_sql_connect($file);
+    	return $Global::sql_dbh;
     }
     # /sql
     if($file eq "-") {
@@ -1817,83 +1831,83 @@ sub start_another_job {
     my $sshlogin = shift;
     # Do we have enough file handles to start another job?
     if(enough_file_handles()) {
-        # sql
-        my $termcaught = 0;
-        my $orig_term =  $SIG{TERM};
-        $SIG{TERM} = sub {
-	    ::debug("run", "******* TERM received waiting for end of critical code start_another_job\n");
-	    $termcaught = 1;
-        };
+    	# sql
+    	my $termcaught = 0;
+    	my $orig_term =  $SIG{TERM};
+    	$SIG{TERM} = sub {
+    		::debug("run", "******* TERM received waiting for end of critical code start_another_job\n");
+    		$termcaught = 1;
+    	};
         # /sql
         if($Global::JobQueue->empty() and not $opt::pipe) {
-            # No more commands to run
-	    debug("start", "Not starting: JobQueue empty\n");
-            # sql
-            if($termcaught) { ::exit_on_term(); }
-            $SIG{TERM} = $orig_term;
-            # /sql
-	    	return 0;
+        	# No more commands to run
+        	debug("start", "Not starting: JobQueue empty\n");
+        	# sql
+        	if($termcaught) { ::exit_on_term(); }
+        	$SIG{TERM} = $orig_term;
+        	# /sql
+        	return 0;
         } else {
             my $job;
-	    # Skip jobs already in job log
-	    # Skip jobs already in results
+            # Skip jobs already in job log
+            # Skip jobs already in results
             do {
-		$job = get_job_with_sshlogin($sshlogin);
-		if(not defined $job) {
-		    # No command available for that sshlogin
-		    debug("start", "Not starting: no jobs available for ",
-			  $sshlogin->string(), "\n");
-                    # sql
-                    if($termcaught) { ::exit_on_term(); }
-                    $SIG{TERM} = $orig_term;
-                    # /sql
-		    return 0;
-		}
-	    } while ($job->is_already_in_joblog()
-		     or
-		     ($opt::results and $opt::resume and $job->is_already_in_results()));
-	    debug("start", "Command to run on '", $job->sshlogin()->string(), "': '",
-		  $job->replaced(),"'\n");
-            if($job->start()) {
-		if($opt::pipe) {
-		    push(@Global::virgin_jobs,$job);
-		}
-				# sql
-                debug("start", "Started as seq ", $job->seq(),
-		      " pid:", $job->pid(), " rowid:", $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'}, "\n");
-                if($termcaught) { ::exit_on_term(); }
-                $SIG{TERM} = $orig_term;
-                # /sql
-                return 1;
-            } else {
-                # Not enough processes to run the job.
-		# Put it back on the queue.
-		$Global::JobQueue->unget($job);
-                # sql
-                if($termcaught) { ::exit_on_term(); }
-                $SIG{TERM} = $orig_term;
-                # /sql
-		# Count down the number of jobs to run for this SSHLogin.
-		my $max = $sshlogin->max_jobs_running();
-		if($max > 1) { $max--; } else {
-		    ::error("No more processes: cannot run a single job. Something is wrong.\n");
-		    ::wait_and_exit(255);
-		}
-		$sshlogin->set_max_jobs_running($max);
-		# Sleep up to 300 ms to give other processes time to die
-		::usleep(rand()*300);
-		::warning("No more processes: ",
-			  "Decreasing number of running jobs to $max. ",
-			  "Raising ulimit -u or /etc/security/limits.conf may help.\n");
-		return 0;
+            	$job = get_job_with_sshlogin($sshlogin);
+            	if(not defined $job) {
+            		# No command available for that sshlogin
+            		debug("start", "Not starting: no jobs available for ",
+            		$sshlogin->string(), "\n");
+            		# sql
+            		if($termcaught) { ::exit_on_term(); }
+            		$SIG{TERM} = $orig_term;
+            		# /sql
+            		return 0;
+            	}
             }
-        }
+            while ($job->is_already_in_joblog() or
+            	($opt::results and $opt::resume and $job->is_already_in_results()));
+            debug("start", "Command to run on '", $job->sshlogin()->string(), "': '",
+            $job->replaced(),"'\n");
+            if($job->start()) {
+            	if($opt::pipe) {
+            		push(@Global::virgin_jobs,$job);
+            	}
+            	# sql
+            	debug("start", "Started as seq ", $job->seq(),
+            		" pid:", $job->pid(), " rowid:", $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'}, "\n");
+            	if($termcaught) { ::exit_on_term(); }
+            	$SIG{TERM} = $orig_term;
+            	# /sql
+            	return 1;
+            } else {
+            	# Not enough processes to run the job.
+            	# Put it back on the queue.
+            	$Global::JobQueue->unget($job);
+            	# sql
+            	if($termcaught) { ::exit_on_term(); }
+            	$SIG{TERM} = $orig_term;
+            	# /sql
+            	# Count down the number of jobs to run for this SSHLogin.
+            	my $max = $sshlogin->max_jobs_running();
+            	if($max > 1) { $max--; } else {
+            		::error("No more processes: cannot run a single job. Something is wrong.\n");
+            		::wait_and_exit(255);
+            	}
+            	$sshlogin->set_max_jobs_running($max);
+            	# Sleep up to 300 ms to give other processes time to die
+            	::usleep(rand()*300);
+            	::warning("No more processes: ",
+            		"Decreasing number of running jobs to $max. ",
+            		"Raising ulimit -u or /etc/security/limits.conf may help.\n");
+            	return 0;
+            }
+        } # End else clause for job queue is not empty
     } else {
-        # No more file handles
-	$Global::no_more_file_handles_warned++ or
-	    ::warning("No more file handles. ",
-		      "Raising ulimit -n or /etc/security/limits.conf may help.\n");
-        return 0;
+    	# No more file handles
+    	$Global::no_more_file_handles_warned++ or
+    	::warning("No more file handles. ",
+    		"Raising ulimit -n or /etc/security/limits.conf may help.\n");
+    	return 0;
     }
 }
 
@@ -2667,143 +2681,145 @@ sub start_no_new_jobs {
 
 # sql
 sub exit_on_term {
-    ::debug("run","**** ENTERING exit_on_term\n");
-    $Global::start_no_new_jobs ||= 1;
-    $SIG{CHLD} = "IGNORE";
-    my @rowid_updates = ();
-    if($Global::sql) {
+	::debug("run","**** ENTERING exit_on_term\n");
+	$Global::start_no_new_jobs ||= 1;
+	$SIG{CHLD} = "IGNORE";
+	my @rowid_updates = ();
+	if($Global::sql) {
 		for my $job (values %Global::running) {
-	    	my $row_id = $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'};
-	    	::debug("run","**** $row_id rowid is running\n");
-	    	push @rowid_updates, $row_id;
+			my $row_id = $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'};
+			::debug("run","**** $row_id rowid is running\n");
+			push @rowid_updates, $row_id;
 		}
 		foreach my $arg_array_r (@{$Global::JobQueue->{'commandlinequeue'}->{'arg_queue'}->{'arg_sub_queue'}->{'unget'}}) {
-	    	foreach my $arg (@{$arg_array_r}) {
+			foreach my $arg (@{$arg_array_r}) {
 				my $row_id = $arg->{'row_id'};
 				::debug("run","**** $row_id rowid is in the unget queue\n");
 				push @rowid_updates, $row_id;
-	    	}
+			}
 		}
-    	my $dbh = $Global::sql_dbh;
-        my @rowid_sort = sort {$a <=> $b} @rowid_updates;
-    	set_sql_status_zero($dbh,@rowid_sort);
-    }
-    for my $job (values %Global::running) {
+		my @rowid_sort = sort {$a <=> $b} @rowid_updates;
+		set_sql_status_zero($Global::sql_dbh,@rowid_sort);
+	}
+	for my $job (values %Global::running) {
 		$job->kill("KILL");
-    }
-    wait_and_exit(0);
+	}
+	wait_and_exit(0);
 }
 
 sub set_sql_status_zero {
-    my($dbh,@rowids) = @_;
-    my $table;
-    if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
-    else { $table = $dbh->{Username}; }
-    my $update_sql = "UPDATE $table SET status = 0 WHERE rowid = ?";
-    foreach my $rowid (@rowids) {
-    	my $sth = $dbh->prepare($update_sql);
-    	my $rv = $sth->execute($rowid);
-    }
-    $dbh->do("COMMIT") or die $dbh->errstr;
+	my($dbh,@rowids) = @_;
+	my $table;
+	if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
+	else { $table = $dbh->{Username}; }
+	my $update_sql = "UPDATE $table SET status = 0 WHERE rowid = ?";
+	foreach my $rowid (@rowids) {
+		my $sth = $dbh->prepare($update_sql);
+		$sth->execute($rowid);
+	}
+	$dbh->do("COMMIT") or die $dbh->errstr;
 }
 
 sub mean {
-    return List::Util::sum(@_)/@_;
+	return List::Util::sum(@_)/@_;
 }
 
 sub median(@) {
-    my @vals = sort {$a <=> $b} @_;
-    my $len = @vals;
-    if($len%2) {
-	return $vals[int($len/2)];
-    }
-    else {
-	return ($vals[int($len/2)-1] + $vals[int($len/2)])/2;
-    }
+	my @vals = sort {$a <=> $b} @_;
+	my $len = @vals;
+	if($len%2) {
+		return $vals[int($len/2)];
+	}
+	else {
+		return ($vals[int($len/2)-1] + $vals[int($len/2)])/2;
+	}
 }
 # /sql
 
 sub reaper {
-    # A job finished.
-    # Print the output.
-    # Start another job
-    # Returns: N/A
-    my $stiff;
-    my $children_reaped = 0;
-    debug("run", "Reaper ");
-    while (($stiff = waitpid(-1, &WNOHANG)) > 0) {
-	$children_reaped++;
-        if($Global::sshmaster{$stiff}) {
-            # This is one of the ssh -M: ignore
-            next;
-        }
-        my $job = $Global::running{$stiff};
-	# '-a <(seq 10)' will give us a pid not in %Global::running
-        $job or next;
-        $job->set_exitstatus($? >> 8);
-        $job->set_exitsignal($? & 127);
-        debug("run", "died (", $job->exitstatus(), "): ", $job->seq());
-        $job->set_endtime(::now());
-        if($stiff == $Global::tty_taken) {
-            # The process that died had the tty => release it
-            $Global::tty_taken = 0;
-        }
-
-        if(not $job->should_be_retried()) {
-	    # The job is done
-	    # Free the jobslot
-	    push @Global::slots, $job->slot();
-	    # sql
-	    if($Global::sql) {
-			my $dbh = $Global::sql_dbh;
-			my $table;
-			if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
-			else { $table = $dbh->{Username}; }
-			my $row_id = $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'};
-			my $sql_done = 0;
-			while ($sql_done != 1) {
-				eval {
-					my $update_sql = "UPDATE $table SET status = 2, finish_ts = ?, return_code=? WHERE rowid = ?";
-					my $sth = $dbh->prepare($update_sql);
-					my $unix_time = time;
-					my $rv = $sth->execute($unix_time,$job->exitstatus(),$row_id);
-					$dbh->do("COMMIT") or die $dbh->errstr;
-				};
-				if($@ ne '') {
-					sleep $Global::sql_retry;
-					$dbh = parallel_sql_reconnect();
-				} else {
-					$sql_done = 1;
+	# A job finished.
+	# Print the output.
+	# Start another job
+	# Returns: N/A
+	my $stiff;
+	my $children_reaped = 0;
+	debug("run", "Reaper ");
+	while (($stiff = waitpid(-1, &WNOHANG)) > 0) {
+		$children_reaped++;
+		if($Global::sshmaster{$stiff}) {
+			# This is one of the ssh -M: ignore
+			next;
+		}
+		my $job = $Global::running{$stiff};
+		# '-a <(seq 10)' will give us a pid not in %Global::running
+		$job or next;
+		$job->set_exitstatus($? >> 8);
+		$job->set_exitsignal($? & 127);
+		debug("run", "died (", $job->exitstatus(), "): ", $job->seq());
+		$job->set_endtime(::now());
+		if($stiff == $Global::tty_taken) {
+			# The process that died had the tty => release it
+			$Global::tty_taken = 0;
+		}
+		
+		if(not $job->should_be_retried()) {
+			# The job is done
+			# Free the jobslot
+			push @Global::slots, $job->slot();
+			# sql
+			if($Global::sql) {
+				my $dbh = $Global::sql_dbh;
+				my $table;
+				if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
+				else { $table = $dbh->{Username}; }
+				my $row_id = $job->{'commandline'}->{'arg_list'}[0][0]->{'row_id'};
+				my $sql_done = 0;
+				while ($sql_done != 1) {
+					if($Global::sqlnoretry == 1) { $sql_done = 1; }
+					eval {
+						my $update_sql = "UPDATE $table SET status = 2, finish_ts = ?, return_code=? WHERE rowid = ?";
+						my $sth = $dbh->prepare($update_sql);
+						my $unix_time = time;
+						$sth->execute($unix_time,$job->exitstatus(),$row_id);
+						$dbh->do("COMMIT") or die $dbh->errstr;
+					};
+					if($@ ne '') {
+						if($Global::sqlnoretry == 1) {
+							::error("Database error occurred and --sql-noretry specified, so exiting.\n");
+							::wait_and_exit(255);
+						}
+						$dbh = parallel_sql_reconnect();
+					} else {
+						$sql_done = 1;
+					}
 				}
 			}
-	    }
-	    # /sql
-	    if($opt::timeout) {
-		# Update average runtime for timeout
-		$Global::timeoutq->update_delta_time($job->runtime());
-	    }
-            # Force printing now if the job failed and we are going to exit
-            my $print_now = ($opt::halt_on_error and $opt::halt_on_error == 2
-			     and $job->exitstatus());
-            if($opt::keeporder and not $print_now) {
-                print_earlier_jobs($job);
-            } else {
-                $job->print();
-            }
-            if($job->exitstatus()) {
-		process_failed_job($job);
-	    }
-
-        }
-        my $sshlogin = $job->sshlogin();
-        $sshlogin->dec_jobs_running();
-        $sshlogin->inc_jobs_completed();
-        $Global::total_running--;
-        delete $Global::running{$stiff};
-	start_more_jobs();
-    }
-    debug("run", "done ");
-    return $children_reaped;
+			# /sql
+			if($opt::timeout) {
+				# Update average runtime for timeout
+				$Global::timeoutq->update_delta_time($job->runtime());
+			}
+			# Force printing now if the job failed and we are going to exit
+			my $print_now = ($opt::halt_on_error and $opt::halt_on_error == 2
+				and $job->exitstatus());
+			if($opt::keeporder and not $print_now) {
+				print_earlier_jobs($job);
+			} else {
+				$job->print();
+			}
+			if($job->exitstatus()) {
+				process_failed_job($job);
+			}
+		}
+		my $sshlogin = $job->sshlogin();
+		$sshlogin->dec_jobs_running();
+		$sshlogin->inc_jobs_completed();
+		$Global::total_running--;
+		delete $Global::running{$stiff};
+		start_more_jobs();
+	}
+	debug("run", "done ");
+	return $children_reaped;
 }
 
 sub process_failed_job {
@@ -2864,37 +2880,34 @@ sub process_failed_job {
 sub __USAGE__ {}
 
 sub wait_and_exit {
-    # If we do not wait, we sometimes get segfault
-    # Returns: N/A
-    my $error = shift;
-    if($error) {
-	# Kill all without printing
-	for my $job (values %Global::running) {
-	    $job->kill("TERM");
-	    $job->kill("TERM");
+	# If we do not wait, we sometimes get segfault
+	# Returns: N/A
+	my $error = shift;
+	if($error) {
+		# Kill all without printing
+		for my $job (values %Global::running) {
+			$job->kill("TERM");
+			$job->kill("TERM");
+		}
 	}
-    }
-    for (keys %Global::unkilled_children) {
-        kill 9, $_;
-        waitpid($_,0);
-        delete $Global::unkilled_children{$_};
-    }
-    # sql
-    if($Global::sqlstats) {
-    	print STDERR "SQL Task Fetch Statistics in ms\n";
-    	print STDERR "Median : ".median(@Global::sqlstats_pickup)."\n";
-    	print STDERR "Mean   : ".mean(@Global::sqlstats_pickup)."\n";
-    	print STDERR "Max    : ".List::Util::max(@Global::sqlstats_pickup)."\n";
-    	print STDERR "Min    : ".List::Util::min(@Global::sqlstats_pickup)."\n";
-    }
-    # /sql
-    wait();
-    # sql
-    if($Global::sql) {
-	#my $dbh = $Global::JobQueue->{'commandlinequeue'}->{'arg_queue'}->{'arg_sub_queue'}->{'fhs'}[0];
-	my $dbh = $Global::sql_dbh;
-	$dbh->disconnect();
-    }
+	for (keys %Global::unkilled_children) {
+		kill 9, $_;
+		waitpid($_,0);
+		delete $Global::unkilled_children{$_};
+	}
+	# sql
+	if($Global::sqlstats && $Global::sql && @Global::sqlstats_pickup) {
+		print STDERR "SQL Task Fetch Statistics in ms\n";
+		print STDERR "Median : ".median(@Global::sqlstats_pickup)."\n";
+		print STDERR "Mean   : ".mean(@Global::sqlstats_pickup)."\n";
+		print STDERR "Max    : ".List::Util::max(@Global::sqlstats_pickup)."\n";
+		print STDERR "Min    : ".List::Util::min(@Global::sqlstats_pickup)."\n";
+	}
+	# /sql
+	wait();
+	# sql
+	if($Global::sql && $Global::sql_dbh) { eval { $Global::sql_dbh->disconnect(); }; }
+	# /sql
     exit($error);
 }
 
@@ -7231,38 +7244,38 @@ sub unget {
 }
 
 sub empty {
-    my $self = shift;
-    my $empty = (not @Global::unget_argv
-		 and not @{$self->{'unget'}});
-    for my $fh (@{$self->{'fhs'}}) {
-	# sql
-	if($Global::sql) {
-	    my $termcaught = 0;
-	    my $orig_term = $SIG{TERM};
-	    $SIG{TERM} = sub {
-			::debug("run", "******* TERM received waiting for end of critical code in empty\n");
-			$termcaught = 1;
-	    };
-	    my $sql_ret = $self->get();
-	    if($sql_ret) {
-        	$self->unget($sql_ret);
-                if($termcaught) { ::exit_on_term(); }
-                $SIG{TERM} = $orig_term;
-		return 0;
-	    } else {
-                if($termcaught) { ::exit_on_term(); }
-                $SIG{TERM} = $orig_term;
-        	return 1;
-	    }
-	} else {
-	    # /sql
-	    $empty &&= eof($fh);
-	# sql
+	my $self = shift;
+	my $empty = (not @Global::unget_argv
+		and not @{$self->{'unget'}});
+	for my $fh (@{$self->{'fhs'}}) {
+		# sql
+		if($Global::sql) {
+			my $termcaught = 0;
+			my $orig_term = $SIG{TERM};
+			$SIG{TERM} = sub {
+				::debug("run", "******* TERM received waiting for end of critical code in empty\n");
+				$termcaught = 1;
+			};
+			my $sql_ret = $self->get();
+			if($sql_ret) {
+				$self->unget($sql_ret);
+				if($termcaught) { ::exit_on_term(); }
+				$SIG{TERM} = $orig_term;
+				return 0;
+			} else {
+				if($termcaught) { ::exit_on_term(); }
+				$SIG{TERM} = $orig_term;
+				return 1;
+			}
+		} else {
+			# /sql
+			$empty &&= eof($fh);
+		# sql
+		}
+		# /sql
 	}
-	# /sql
-    }
-    ::debug("run", "MultifileQueue->empty $empty ");
-    return $empty;
+	::debug("run", "MultifileQueue->empty $empty ");
+	return $empty;
 }
 
 sub xapply_get {
@@ -7374,23 +7387,31 @@ sub nest_get {
 
 # sql
 sub read_sql_arg_from_fh {
-    my $dbh = shift;
-    my $try = shift;
-    my $max_tries = 5;
-    my $min_us = 10;
-    my $max_us = 50;
-    my $trans_pre;
-    if($Global::sqlstats) {
-		$trans_pre = [Time::HiRes::gettimeofday];
-    }
-    my $command;
-    my $row_id;
-    my $table;
-    if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
-    else { $table = $dbh->{Username}; }
-    my $sql_done = 0;
-    while($sql_done != 1) {
-    	eval {
+	my $dbh = shift;
+	my $try = shift;
+	my $max_tries = 5;
+	my $min_us = 10;
+	my $max_us = 50;
+	my $trans_pre;
+	if($Global::sqlstats) {
+		if(not $Global::use{"Time::HiRes"}) {
+			if(eval "use Time::HiRes qw ( gettimeofday );") {
+				eval "sub TimeHiResgtd { return Time::HiRes::gettimeofday };";
+			} else {
+				eval "sub TimeHiResgtd { return 0 };";
+			}
+			$Global::use{"Time::HiRes"} = 1;
+		}
+		$trans_pre = TimeHiResgtd();
+	}
+	my $command;
+	my $row_id;
+	my $table;
+	if($Global::sqlset) { $table = $dbh->{Username}.$Global::sqlset; }
+	else { $table = $dbh->{Username}; }
+	my $sql_done = 0;
+	while($sql_done != 1) {
+		eval {
 			my $select_sql = "SELECT rowid,command FROM $table WHERE status = 0 LIMIT 1 FOR UPDATE";
 			my $sth = $dbh->prepare($select_sql);
 			$sth->execute();
@@ -7399,108 +7420,112 @@ sub read_sql_arg_from_fh {
 			$row_id = ${$return_ref}[0];
 			my $unix_time = time;
 			if($ENV{'PBS_JOBID'}) {
-	    		my $update_sql = "UPDATE $table SET status = 1, get_ts = ?, sched_id = ? WHERE rowid = ?";
-	    		my $sth = $dbh->prepare($update_sql);
-	    		my $rv = $sth->execute($unix_time,$ENV{'PBS_JOBID'},$row_id);
+				my $update_sql = "UPDATE $table SET status = 1, get_ts = ?, sched_id = ? WHERE rowid = ?";
+				my $sth = $dbh->prepare($update_sql);
+				$sth->execute($unix_time,$ENV{'PBS_JOBID'},$row_id);
 			} else {
-	    		my $update_sql = "UPDATE $table SET status = 1, get_ts = ? WHERE rowid = ?";
-	    		my $sth = $dbh->prepare($update_sql);
-	    		my $rv = $sth->execute($unix_time,$row_id);
+				my $update_sql = "UPDATE $table SET status = 1, get_ts = ? WHERE rowid = ?";
+				my $sth = $dbh->prepare($update_sql);
+				$sth->execute($unix_time,$row_id);
 			}
 			$dbh->do("COMMIT") or die $dbh->errstr;
-    	};
-    	if($@ ne '') {
+		};
+		if($@ ne '') {
 			if($@ =~ /.*deadlock detected.*/) {
-    			$try++;
-    			if($try >= $max_tries) { ::error("Deadlock detection handling failed after $try times: $@"); ::wait_and_exit(255); }
-        		::usleep(int(rand(($max_us - $min_us) + 1)) + $min_us);
-        		($command,$row_id) = read_sql_arg_from_fh($Global::sql_dbh,$try+1);
+				$try++;
+				if($try >= $max_tries) { ::error("Deadlock detection handling failed after $try times: $@"); ::wait_and_exit(255); }
+				::usleep(int(rand(($max_us - $min_us) + 1)) + $min_us);
+				($command,$row_id) = read_sql_arg_from_fh($Global::sql_dbh,$try+1);
 			} else {
-				sleep $Global::sql_retry;
+				if($Global::sqlnoretry == 1) {
+					::error("Database error occurred and --sql-noretry specified, so exiting.\n");
+					::wait_and_exit(255);
+				}
 				$dbh = ::parallel_sql_reconnect();
 			}
-    	} else {
+		} else {
 			$sql_done = 1;
 		}
-    }
-    if($Global::sqlstats) {
+	}
+	if($Global::sqlstats) {
 		my $trans_diff = Time::HiRes::tv_interval($trans_pre) * 1000;
 		push @Global::sqlstats_pickup, $trans_diff;
-    }
-    return($command,$row_id);
+	}
+	return($command,$row_id);
 }
 # /sql
 
 sub read_arg_from_fh {
-    # Read one Arg from filehandle
-    # Returns:
-    #   Arg-object with one read line
-    #   undef if end of file
-    my $fh = shift;
-    my $prepend = undef;
-    my $arg;
-    # sql
-    my $row_id;
-    # /sql
-    do {{
+	# Read one Arg from filehandle
+	# Returns:
+	#   Arg-object with one read line
+	#   undef if end of file
+	my $fh = shift;
+	my $prepend = undef;
+	my $arg;
 	# sql
-	if(! $Global::sql) {
+	my $row_id;
 	# /sql
-	    # This makes 10% faster
-	    if(not ($arg = <$fh>)) {
-		if(defined $prepend) {
-		    return Arg->new($prepend);
+	do {{
+		# sql
+		if(! $Global::sql) {
+			# /sql
+			# This makes 10% faster
+			if(not ($arg = <$fh>)) {
+				if(defined $prepend) {
+					return Arg->new($prepend);
+				} else {
+					return undef;
+				}
+			}
+		# sql
 		} else {
-		    return undef;
+			($arg,$row_id) = read_sql_arg_from_fh($Global::sql_dbh,1);
 		}
-	    }
-	# sql
+		# /sql
+		::debug("run", "**** read $arg with rowid $row_id\n");
+		# Remove delimiter
+		$arg =~ s:$/$::;
+		if($Global::end_of_file_string and $arg eq $Global::end_of_file_string) {
+				# Ignore the rest of input file
+				close $fh;
+				::debug("run", "EOF-string ($arg) met\n");
+				if(defined $prepend) {
+					return Arg->new($prepend);
+				} else {
+					return undef;
+				}
+		}
+		if(defined $prepend) {
+			$arg = $prepend.$arg; # For line continuation
+			$prepend = undef;
+		}
+		if($Global::ignore_empty) {
+			if($arg =~ /^\s*$/) {
+				redo;
+			}
+		}
+		if($Global::max_lines) {
+			if($arg =~ /\s$/) {
+				# Trailing space => continued on next line
+				$prepend = $arg;
+				redo;
+			}
+		}
+	}}
+	# Dummy loop {{}} for redo
+	while (1 == 0);
+	if(defined $arg) {
+		# sql
+		##return Arg->new($arg);
+		return Arg->new($arg,$row_id);
+		# /sql
 	} else {
-	    ($arg,$row_id) = read_sql_arg_from_fh($Global::sql_dbh,1);
-	}
-	# /sql
-	::debug("run", "**** read $arg with rowid $row_id\n");
-	# Remove delimiter
-	$arg =~ s:$/$::;
-	if($Global::end_of_file_string and
-	   $arg eq $Global::end_of_file_string) {
-	    # Ignore the rest of input file
-	    close $fh;
-	    ::debug("run", "EOF-string ($arg) met\n");
-	    if(defined $prepend) {
-		return Arg->new($prepend);
-	    } else {
+		# sql
+		##::die_bug("multiread arg undefined");
 		return undef;
-	    }
+		# /sql
 	}
-	if(defined $prepend) {
-	    $arg = $prepend.$arg; # For line continuation
-	    $prepend = undef; #undef;
-	}
-	if($Global::ignore_empty) {
-	    if($arg =~ /^\s*$/) {
-		redo; # Try the next line
-	    }
-	}
-	if($Global::max_lines) {
-	    if($arg =~ /\s$/) {
-		# Trailing space => continued on next line
-		$prepend = $arg;
-		redo;
-	    }
-	}
-	}} while (1 == 0); # Dummy loop {{}} for redo
-    if(defined $arg) {
-	# sql
-	##return Arg->new($arg);
-	return Arg->new($arg,$row_id);
-	# /sql
-    } else {
-	# sql
-	##::die_bug("multiread arg undefined");
-	return undef;
-	# /sql
-    }
 }
 
 sub expand_combinations {
@@ -7530,17 +7555,17 @@ sub expand_combinations {
 package Arg;
 
 sub new {
-    my $class = shift;
-    my $orig = shift;
-    # sql
-    my $row_id = shift;
-    # /sql
-    return bless {
-	'orig' => $orig,
+	my $class = shift;
+	my $orig = shift;
 	# sql
-	'row_id' => $row_id,
+	my $row_id = shift;
 	# /sql
-    }, ref($class) || $class;
+	return bless {
+		'orig' => $orig,
+		# sql
+		'row_id' => $row_id,
+		# /sql
+	}, ref($class) || $class;
 }
 
 sub replace {
