@@ -25,12 +25,12 @@ my $pass;
 my $user;
 my $database;
 while(<CONF>) {
-  chomp;
-  my($key,$data) = split(/=/);
-  if($key eq "user") { $user = $data; }
-  if($key eq "pass") { $pass = $data; }
-  if($key eq "host") { $host = $data; }
-  if($key eq "database") { $database = $data; }
+	chomp;
+	my($key,$data) = split(/=/);
+	if($key eq "user") { $user = $data; }
+	if($key eq "pass") { $pass = $data; }
+	if($key eq "host") { $host = $data; }
+	if($key eq "database") { $database = $data; }
 }
 close(CONF);
 
@@ -47,115 +47,112 @@ else { &HELP_MESSAGE(); }
 $gdbh->disconnect();
 
 sub create_set {
-  my $dbh = shift;
-  my $setname = shift;
-  &check_str($setname);
-  my $table;
-  $table = $running_user.$setname;
-  my $set_count = &count_sets($dbh);
-  if($set_count >= $max_sets) { print "Max set count $max_sets reached\n"; return 1; }
-  my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
-  my $index_name = $table.'_status_hash';
-  my $create_index = "CREATE INDEX $index_name ON $table USING hash (status)";
-  my $set_owner = "ALTER TABLE $table OWNER TO $running_user";
-  my $sth_create = $dbh->prepare($create_table);
-  $sth_create->execute();
-  my $sth_create_idx = $dbh->prepare($create_index);
-  $sth_create_idx->execute();
-  my $sth_alter = $dbh->prepare($set_owner);
-  $sth_alter->execute();
-  $dbh->do("COMMIT");
+	my $dbh = shift;
+	my $setname = shift;
+	check_str($setname);
+	my $table;
+	$table = $running_user.$setname;
+	my $set_count = &count_sets($dbh);
+	if($set_count >= $max_sets) { print "Max set count $max_sets reached\n"; return 1; }
+	my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
+	my $index_name = $table.'_status_hash';
+	my $create_index = "CREATE INDEX $index_name ON $table USING hash (status)";
+	my $set_owner = "ALTER TABLE $table OWNER TO $running_user";
+	my $sth_create = $dbh->prepare($create_table);
+	$sth_create->execute();
+	my $sth_create_idx = $dbh->prepare($create_index);
+	$sth_create_idx->execute();
+	my $sth_alter = $dbh->prepare($set_owner);
+	$sth_alter->execute();
+	$dbh->do("COMMIT");
 }
 
 sub initial {
-  my $dbh = shift;
-  my $table = shift;
-  my ($name,$passwd,$uid,$gid,
-      $quota,$comment,$gcos,$homedir,$shell,$expire) = getpwnam($table);
-  my $dbconf = $homedir . "/.parallel/db.conf";
-  if(-e $dbconf) { die "Exiting, configuration file exists: $dbconf\n"; }
-  my $password = generatePassword(15,"Aan");
-  my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
-  my $sth_create_t = $dbh->prepare($create_table);
-  $sth_create_t->execute();
-  my $index_name = $table.'_status_hash';
-  my $create_index = "CREATE INDEX $index_name ON $table USING hash (status)";
-  my $sth_create_i = $dbh->prepare($create_index);
-  $sth_create_i->execute();
-  my $create_role = "CREATE ROLE $table WITH LOGIN PASSWORD '$password'";
-  my $sth_create_r = $dbh->prepare($create_role);
-  $sth_create_r->execute();
-  my $grant_role = "GRANT $table TO parallel_admin";
-  my $sth_grant_r = $dbh->prepare($grant_role);
-  $sth_grant_r->execute();
-  my $alter_owner = "ALTER TABLE $table OWNER TO $table";
-  my $sth_alter_o = $dbh->prepare($alter_owner);
-  $sth_alter_o->execute();
-  $dbh->do("COMMIT");
-  my $uid = getpwnam($table);
-  if(! $homedir."/.parallel") {
-    mkdir $homedir."/.parallel", 0700;
-    chown $uid, 15, $homedir."/.parallel";
-  }  
-  open(DBCONF, '>', $dbconf) ||
-    die "Cannot open configuration file $db_config for writing: $!\n";
-  print DBCONF "user=$table\n";
-  print DBCONF "pass=$password\n";
-  print DBCONF "host=paralleldb";
-  close DBCONF;
-  chown $uid, 15, $dbconf;
-  chmod 0400, $dbconf;
+	my $dbh = shift;
+	my $table = shift;
+	my ($name,$passwd,$uid,$gid,$quota,$comment,$gcos,$homedir,$shell,$expire) = getpwnam($table);
+	my $dbconf = $homedir . "/.parallel/db.conf";
+	if(-e $dbconf) { die "Exiting, configuration file exists: $dbconf\n"; }
+	my $password = generatePassword(15,"Aan");
+	my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
+	my $sth_create_t = $dbh->prepare($create_table);
+	$sth_create_t->execute();
+	my $index_name = $table.'_status_hash';
+	my $create_index = "CREATE INDEX $index_name ON $table USING hash (status)";
+	my $sth_create_i = $dbh->prepare($create_index);
+	$sth_create_i->execute();
+	my $create_role = "CREATE ROLE $table WITH LOGIN PASSWORD '$password'";
+	my $sth_create_r = $dbh->prepare($create_role);
+	$sth_create_r->execute();
+	my $grant_role = "GRANT $table TO parallel_admin";
+	my $sth_grant_r = $dbh->prepare($grant_role);
+	$sth_grant_r->execute();
+	my $alter_owner = "ALTER TABLE $table OWNER TO $table";
+	my $sth_alter_o = $dbh->prepare($alter_owner);
+	$sth_alter_o->execute();
+	$dbh->do("COMMIT");
+	if(! $homedir."/.parallel") {
+		mkdir $homedir."/.parallel", 0700;
+		chown $uid, -1, $homedir."/.parallel";
+	}
+	open(DBCONF, '>', $dbconf) ||
+		die "Cannot open configuration file $dbconf for writing: $!\n";
+	print DBCONF "user=$table\n";
+	print DBCONF "pass=$password\n";
+	print DBCONF "host=paralleldb";
+	close DBCONF;
+	chown $uid, -1, $dbconf;
+	chmod 0400, $dbconf;
 }
 
 
 sub del_set {
-  my $dbh = shift;
-  my $setname = shift;
-  &check_str($setname);
-  my $table;
-  $table = $running_user.$setname;
-  if(! $yes) {
-    print "Are you sure you want to delete set '$setname' (Y/n)? ";
-    my $ans = <STDIN>;
-    chomp $ans;
-    if($ans !~ /Y.*/) { exit 0; }
-  }
-  my $del_table = "DROP TABLE $table";
-  my $sth_del = $dbh->prepare($del_table);
-  $sth_del->execute();
-  $dbh->do("COMMIT");
+	my $dbh = shift;
+	my $setname = shift;
+	check_str($setname);
+	my $table = $running_user.$setname;
+	if(! $yes) {
+		print "Are you sure you want to delete set '$setname' (Y/n)? ";
+		my $ans = <STDIN>;
+		chomp $ans;
+		if($ans !~ /Y.*/) { exit 0; }
+	}
+	my $del_table = "DROP TABLE $table";
+	my $sth_del = $dbh->prepare($del_table);
+	$sth_del->execute();
+	$dbh->do("COMMIT");
 }
 
 sub check_str {
-  my $sanstr = shift;
-  $sanstr =~ s/[^$valid_setname_chars]/\#/go;
-  if ($sanstr =~ /\#/ || length($sanstr) > $max_setname_chars) {
-    print "Input is either > $max_setname_chars long or contains illegal characters\n";
-    print "Allowed characters: $valid_setname_chars\n";
-    exit 1;
-  }
+	my $sanstr = shift;
+	$sanstr =~ s/[^$valid_setname_chars]/\#/go;
+	if ($sanstr =~ /\#/ || length($sanstr) > $max_setname_chars) {
+		print "Input is either > $max_setname_chars long or contains illegal characters\n";
+		print "Allowed characters: $valid_setname_chars\n";
+		exit 1;
+	}
 }
 
 sub count_sets {
-  my $dbh = shift;
-  my $select_sql = "SELECT relname FROM pg_class c WHERE c.relkind = 'r'";
-  my $sth = $dbh->prepare($select_sql);
-  $sth->execute() or die $DBI::errstr;
-  while(my ($name) = $sth->fetchrow_array()) {
-    next if $name !~ /$running_user.+/;
-    push @sets, $name;
-  }
-  return scalar(@sets);
+	my $dbh = shift;
+	my $select_sql = "SELECT relname FROM pg_class c WHERE c.relkind = 'r'";
+	my $sth = $dbh->prepare($select_sql);
+	$sth->execute() or die $DBI::errstr;
+	while(my ($name) = $sth->fetchrow_array()) {
+		next if $name !~ /$running_user.+/;
+		push @sets, $name;
+	}
+	return scalar(@sets);
 }
 
 
 sub HELP_MESSAGE() {
-  print "Usage: pssu [SINGLE ACTION]\n";
-  print "  ACTIONS\n";
-  print "    --initial                 setup initial parallel_sql default table\n";
-  print "    --create-set <setname>    create a new set with the given set name\n";
-  print "    --del-set <setname>       delete a set with a given name (add -y for no prompt)\n";
-  exit 0;
+	print "Usage: pssu [SINGLE ACTION]\n";
+	print "  ACTIONS\n";
+	print "    --initial                 setup initial parallel_sql default table\n";
+	print "    --create-set <setname>    create a new set with the given set name\n";
+	print "    --del-set <setname>       delete a set with a given name (add -y for no prompt)\n";
+	exit 0;
 }
 
 ###############################################################################
@@ -217,7 +214,6 @@ sub generatePassword
 sub sumHashVals
 {
         my $hashRef = shift;
-        my $sum;
         my $key;
         
         my $sum = 0;
