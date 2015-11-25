@@ -118,7 +118,7 @@ sub delete($) {
 		print "Are you sure you want to delete all tasks (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { exit 0; }
+		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $sql_delete = "DELETE FROM $table";
 	my $sth = $dbh->prepare($sql_delete);
@@ -138,7 +138,7 @@ sub delete_comp($) {
 		print "Are you sure you want to delete all completed tasks (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { exit 0; }
+		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $sql_delete = "DELETE FROM $table WHERE status = 2";
 	my $sth = $dbh->prepare($sql_delete);
@@ -156,7 +156,7 @@ sub reset($) {
 		print "Are you sure you want to set all picked up tasks to available (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { exit 0; }
+		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $sql_delete = "UPDATE $table SET status = 0 WHERE status = 1";
 	my $sth = $dbh->prepare($sql_delete);
@@ -173,7 +173,7 @@ sub nonzero_reset($) {
 		print "Are you sure you want to set all completed non-zero exit code tasks to available (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { exit 0; }
+		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $sql_delete = "UPDATE $table SET status = 0 WHERE status = 2 AND return_code != 0";
 	my $sth = $dbh->prepare($sql_delete);
