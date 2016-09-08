@@ -119,7 +119,7 @@ sub del_set {
 		print "Are you sure you want to delete set '$setname' (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { exit 0; }
+		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $del_table = "DROP TABLE $table";
 	my $sth_del = $dbh->prepare($del_table);
