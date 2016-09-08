@@ -1,5 +1,9 @@
 #!/usr/bin/perl
 
+##########################################################
+# REMEBER TO UPDATE SUDOERS WHEN MAKING A NEW PARALLEL-SQL
+##########################################################
+
 my $dbconf = '/sw/local/etc/pssu_admin_db.conf';
 my $valid_setname_chars = 'a-zA-Z0-9';
 my $max_setname_chars = 25;

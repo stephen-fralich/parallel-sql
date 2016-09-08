@@ -1,9 +1,13 @@
 #!/usr/bin/env perl
 
+##########################################################
+# REMEBER TO UPDATE SUDOERS WHEN MAKING A NEW PARALLEL-SQL
+##########################################################
+
 # Copyright (C) 2007,2008,2009,2010,2011,2012,2013,2014 Ole Tange and
 # Free Software Foundation, Inc.
 #
-# Copyright (C) 2014,2015 Stephen Fralich and University of Washington
+# Copyright (C) 2014,2015,2016 Stephen Fralich and University of Washington
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -740,7 +744,7 @@ sub get_options_from_array {
 sub parse_options {
     # Returns: N/A
     # Defaults:
-    $Global::version = '20140922-sql-20150721';
+    $Global::version = '20140922-sql-20160629';
     $Global::progname = 'parallel';
     $Global::infinity = 2**31;
     $Global::debug = 0;
@@ -1633,6 +1637,11 @@ sub parallel_sql_connect {
 			if($key eq "host") { $Global::sql_host = $data; }
 		}
 		close(CONF);
+		my $sql_config_error = 0;
+		if($Global::sql_user !~ /^[a-z0-9]+$/) { ::error("'user' parameter '$Global::sql_user' is invalid\n"); $sql_config_error = 1; }
+		if($Global::sql_pass !~ /^[a-zA-Z0-9]{8,15}$/) { ::error("'pass' parameter '$Global::sql_pass' is invalid\n"); $sql_config_error = 1; }
+		if($Global::sql_host !~ /^[a-z0-9\.]+$/) { ::error("'host' parameter '$Global::sql_host' is invalid\n"); $sql_config_error = 1; }
+		if($sql_config_error) { ::error("Invalid database config file '$dbconf'\n"); wait_and_exit(255); }
 		$Global::sql_db = $file;
 		my $dbh = DBI->connect("DBI:Pg:database=$Global::sql_db;host=$Global::sql_host",
 			$Global::sql_user, $Global::sql_pass, {RaiseError => 1, AutoCommit => 0});
@@ -2784,6 +2793,13 @@ sub reaper {
 						$dbh->do("COMMIT") or die $dbh->errstr;
 					};
 					if($@ ne '') {
+						if($@ =~ /.*does not exist.*/) {
+							if($Global::sqlset) {
+								::error("TASK SET '$Global::sqlset' DOES NOT EXIST!\n"); ::wait_and_exit(255);
+							} else {
+								::error("TABLE '$table' DOES NOT EXIST\n"); ::wait_and_exit(255);
+							}
+						}
 						if($Global::sqlnoretry == 1) {
 							::error("Database error occurred and --sql-noretry specified, so exiting.\n");
 							::wait_and_exit(255);
@@ -7433,9 +7449,15 @@ sub read_sql_arg_from_fh {
 		if($@ ne '') {
 			if($@ =~ /.*deadlock detected.*/) {
 				$try++;
-				if($try >= $max_tries) { ::error("Deadlock detection handling failed after $try times: $@"); ::wait_and_exit(255); }
+				if($try >= $max_tries) { ::error("Deadlock detection handling failed after $try times: $@\n"); ::wait_and_exit(255); }
 				::usleep(int(rand(($max_us - $min_us) + 1)) + $min_us);
 				($command,$row_id) = read_sql_arg_from_fh($Global::sql_dbh,$try+1);
+			} elsif($@ =~ /.*does not exist.*/) {
+				if($Global::sqlset) {
+					::error("TASK SET '$Global::sqlset' DOES NOT EXIST!\n"); ::wait_and_exit(255);
+                                } else {
+					::error("TABLE '$table' DOES NOT EXIST\n"); ::wait_and_exit(255);
+				}
 			} else {
 				if($Global::sqlnoretry == 1) {
 					::error("Database error occurred and --sql-noretry specified, so exiting.\n");

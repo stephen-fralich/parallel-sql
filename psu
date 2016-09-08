@@ -1,5 +1,9 @@
 #!/usr/bin/perl
 
+##########################################################
+# REMEBER TO UPDATE SUDOERS WHEN MAKING A NEW PARALLEL-SQL
+##########################################################
+
 use DBI;
 use Getopt::Long;
 
@@ -8,6 +12,7 @@ GetOptions("load" => \$load,
 	"del" => \$delete,
 	"reset" => \$reset,
 	"reset-sched" => \$reset_sched,
+	"reset-all" => \$reset_all,
 	"del-comp" => \$delete_comp,
 	"show-nonzero" => \$nonzero,
 	"reset-nonzero" => \$nonzero_reset,
@@ -23,7 +28,7 @@ if (! $database) { $database = 'parallel'; }
 
 my $dbconf = $ENV{'HOME'} . "/.parallel/db.conf";
 if(not open(CONF, "<", $dbconf)) {
-	die "Cannot read database config file `$dbconf': $!\n";
+	die "Cannot read database config file '$dbconf': $!\n";
 }
 my $host;
 my $pass;
@@ -36,6 +41,12 @@ while(<CONF>) {
 	if($key eq "host") { $host = $data; }
 }
 close(CONF);
+my $sql_config_error = 0;
+if($user !~ /^[a-z0-9]+$/) { print "'user' parameter '$user' is invalid\n"; $sql_config_error = 1; }
+if($pass !~ /^[a-zA-Z0-9]{8,15}$/) { print "'pass' parameter '$pass' is invalid\n"; $sql_config_error = 1; }
+if($host !~ /^[a-z0-9\.]+$/) { print "'host' parameter '$host' is invalid\n"; $sql_config_error = 1; }
+if($sql_config_error) { die "Invalid database config file '$dbconf'\n"; }
+
 my $gdbh = DBI->connect("DBI:Pg:database=$database;host=$host",
 						$user, $pass, {'RaiseError' => 2, AutoCommit => 0});
 my $table = $user;
@@ -47,6 +58,7 @@ elsif($stats) { &stats($gdbh,$table); }
 elsif($delete) { &delete($gdbh,$table); }
 elsif($reset) { &reset($gdbh,$table); }
 elsif($reset_sched) { &reset_sched($gdbh,$table); }
+elsif($reset_all) { &reset_all($gdbh,$table); }
 elsif($delete_comp) { &delete_comp($gdbh,$table); }
 elsif($nonzero) { &nonzero($gdbh,$table); }
 elsif($show_comp) { &show_comp($gdbh,$table); }
@@ -159,6 +171,23 @@ sub reset($) {
 		if($ans !~ /Y.*/) { exit 0; }
 	}
 	my $sql_delete = "UPDATE $table SET status = 0 WHERE status = 1";
+	my $sth = $dbh->prepare($sql_delete);
+	$sth->execute();
+	$dbh->do("COMMIT");
+	my $rows = $sth->rows;
+	print "Tasks reset: $rows\n";
+}
+
+sub reset_all($) {
+	my $dbh = shift;
+	my $table = shift;
+	if(! $yes) {
+		print "Are you sure you want to set _all_ tasks to available (Y/n)? ";
+		my $ans = <STDIN>;
+		chomp $ans;
+		if($ans !~ /Y.*/) { exit 0; }
+	}
+	my $sql_delete = "UPDATE $table SET status = 0 WHERE status != 0";
 	my $sth = $dbh->prepare($sql_delete);
 	$sth->execute();
 	$dbh->do("COMMIT");
@@ -282,6 +311,7 @@ sub HELP_MESSAGE() {
 	print "    --del-comp         delete all completed tasks (add -y for no prompt)\n";
 	print "    --reset            set picked up tasks to available (add -y for no prompt)\n";
 	print "    --reset-sched      set picked up tasks to available with scheduler data\n";
+	print "    --reset-all        set all tasks to available (add -y for no prompt)\n";
 	print "    --show-nonzero     show completed tasks with non-zero exit code\n";
 	print "    --reset-nonzero    set completed tasks with non-zero exit code to available\n";
 	print "    --show-comp        show completed tasks\n";
