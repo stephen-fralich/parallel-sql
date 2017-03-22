@@ -19,10 +19,14 @@ GetOptions("load" => \$load,
 	"show-comp" => \$show_comp,
 	"show-avail" => \$show_avail,
 	"show-running" => \$show_running,	
-	"show-sets" => \$show_sets,
+	"show-sets" => \$show_sizes,
+	"show-index" => \$show_index,
+	"set-index=s" => \$set_index,
+	"show-sizes" => \$show_sizes,
 	"y" => \$yes,
 	"a=s" => \$database,
-	"sql-set=s" => \$set) || &HELP_MESSAGE();
+	"set=s" => \$sqlset,
+	"sql-set=s" => \$sqlset) || main::HELP_MESSAGE();
 
 if (! $database) { $database = 'parallel'; }
 
@@ -30,6 +34,7 @@ my $dbconf = $ENV{'HOME'} . "/.parallel/db.conf";
 if(not open(CONF, "<", $dbconf)) {
 	die "Cannot read database config file '$dbconf': $!\n";
 }
+my $max_db_usage_mb = 8192;
 my $host;
 my $pass;
 my $user;
@@ -50,32 +55,49 @@ if($sql_config_error) { die "Invalid database config file '$dbconf'\n"; }
 my $gdbh = DBI->connect("DBI:Pg:database=$database;host=$host",
 						$user, $pass, {'RaiseError' => 2, AutoCommit => 0});
 my $table = $user;
-if($set) { $table = $user.$set; }
+if($sqlset) { $table = $user.$sqlset; }
 
-if($load) { &load($gdbh,$table); }
-elsif($show_sets) { &show_sets($gdbh); }
-elsif($stats) { &stats($gdbh,$table); }
-elsif($delete) { &delete($gdbh,$table); }
-elsif($reset) { &reset($gdbh,$table); }
-elsif($reset_sched) { &reset_sched($gdbh,$table); }
-elsif($reset_all) { &reset_all($gdbh,$table); }
-elsif($delete_comp) { &delete_comp($gdbh,$table); }
-elsif($nonzero) { &nonzero($gdbh,$table); }
-elsif($show_comp) { &show_comp($gdbh,$table); }
-elsif($show_avail) { &show_avail($gdbh,$table); }
-elsif($show_running) { &show_running($gdbh,$table); }
-elsif($nonzero_reset) { &nonzero_reset($gdbh,$table); }
-else { &HELP_MESSAGE(); }
+if(! main::verify_table($gdbh,$table)) {
+	print "ERROR: no such table\n";
+	$gdbh->disconnect();
+	exit 1;
+}
+
+if($load) { main::load($gdbh,$table,$user); }
+elsif($show_sets) { main::show_sets($gdbh); }
+elsif($stats) { main::stats($gdbh,$table); }
+elsif($delete) { main::delete($gdbh,$table); }
+elsif($reset) { main::reset($gdbh,$table); }
+elsif($reset_sched) { main::reset_sched($gdbh,$table); }
+elsif($reset_all) { main::reset_all($gdbh,$table); }
+elsif($delete_comp) { main::delete_comp($gdbh,$table); }
+elsif($nonzero) { main::nonzero($gdbh,$table); }
+elsif($show_comp) { main::show_comp($gdbh,$table); }
+elsif($show_avail) { main::show_avail($gdbh,$table); }
+elsif($show_running) { main::show_running($gdbh,$table); }
+elsif($nonzero_reset) { main::nonzero_reset($gdbh,$table); }
+elsif($show_index) { main::show_index_type($gdbh,$table); }
+elsif($set_index) { main::set_index_type($gdbh,$table,$set_index); }
+elsif($show_sizes) { main::show_sizes($gdbh,$user); }
+else { $gdbh->disconnect(); main::HELP_MESSAGE(); }
 
 $gdbh->disconnect();
 
 
-sub load($) {
+sub load {
 	my $dbh = shift;
 	my $table = shift;
+	my $user = shift;
 	my $unix_time = time;
 	my $progress = 100000;
 	my $rows_cp = 0;
+	my($total,%junk) = main::get_sizes($dbh,$user);
+	if($total > $max_db_usage_mb) {
+		main::show_sizes($dbh,$user);
+		print "\nERROR: Database usage limit exceeded. Clear out old data before proceeding.\n";
+		$dbh->disconnect();
+		exit 255;
+	}
 	$dbh->do("COPY $table ( command,status,create_ts ) FROM STDIN");
 	print STDERR "Loading data ... ";
 	while(my $item = <STDIN>) {
@@ -88,16 +110,16 @@ sub load($) {
 	}
 	if(! $dbh->pg_putcopyend()) { die "putcopyend() failed: ".$dbh->errstr."\n"; }
 	$dbh->do("COMMIT");
-	print STDERR " done.\n";
+	print STDERR "done.\n";
 	$dbh->{AutoCommit} = 1;
-	print STDERR "Optimizing index ...";
+	print STDERR "Optimizing index ... ";
 	my $sql_analyze = "VACUUM ( ANALYZE ) $table";
 	my $sth = $dbh->prepare($sql_analyze);
 	$sth->execute() or die $sth->errstr;
-	print STDERR " done.\n";
+	print STDERR "done.\n";
 }
 
-sub stats($) {
+sub stats {
 	my $dbh = shift;
 	my $table = shift;
 	my %status_h = (0, 'available',
@@ -112,7 +134,7 @@ sub stats($) {
 	}
 }
 
-sub nonzero($) {
+sub nonzero {
 	my $dbh = shift;
 	my $table = shift;
 	my $sql_count = "SELECT return_code,command FROM $table WHERE status = 2 AND return_code != 0";
@@ -123,14 +145,14 @@ sub nonzero($) {
 	}
 }
 
-sub delete($) {
+sub delete {
 	my $dbh = shift;
 	my $table = shift;
 	if(! $yes) {
 		print "Are you sure you want to delete all tasks (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
+		if($ans !~ /Y.*/) { $dbh->disconnect(); if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $sql_delete = "DELETE FROM $table";
 	my $sth = $dbh->prepare($sql_delete);
@@ -141,34 +163,47 @@ sub delete($) {
 	my $sth_reset = $dbh->prepare($sql_alter);
 	$sth_reset->execute();
 	$dbh->do("COMMIT");
+	$dbh->{AutoCommit} = 1;
+	print STDERR "Cleaning up ... ";
+	my $sql_vacuum = "VACUUM $table";
+	my $sth_vc = $dbh->prepare($sql_vacuum);
+	$sth_vc->execute() or die $sth_vc->errstr;
+	print STDERR "done.\n";
 }
 
-sub delete_comp($) {
-	my $dbh = shift;
-	my $table = shift;
-	if(! $yes) {
-		print "Are you sure you want to delete all completed tasks (Y/n)? ";
-		my $ans = <STDIN>;
-		chomp $ans;
-		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
-	}
-	my $sql_delete = "DELETE FROM $table WHERE status = 2";
-	my $sth = $dbh->prepare($sql_delete);
-	$sth->execute();
-	$dbh->do("COMMIT");
-	my $rows = $sth->rows;
-	print "Tasks deleted: $rows\n";
+sub delete_comp {
+	print "The --del-comp option has been removed. Please instead use the --del option to\nremove all tasks.\n";
+#	my $dbh = shift;
+#	my $table = shift;
+#	if(! $yes) {
+#		print "Are you sure you want to delete all completed tasks (Y/n)? ";
+#		my $ans = <STDIN>;
+#		chomp $ans;
+#		if($ans !~ /Y.*/) { $dbh->disconnect(); if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
+#	}
+#	my $sql_delete = "DELETE FROM $table WHERE status = 2";
+#	my $sth = $dbh->prepare($sql_delete);
+#	$sth->execute();
+#	$dbh->do("COMMIT");
+#	my $rows = $sth->rows;
+#	print "Tasks deleted: $rows\n";
+#	$dbh->{AutoCommit} = 1;
+#	print STDERR "Cleaning up ... ";
+#	my $sql_analyze = "VACUUM ( ANALYZE ) $table";
+#	my $sth_vc = $dbh->prepare($sql_analyze);
+#	$sth_vc->execute() or die $sth_vc->errstr;
+#	print STDERR "done.\n";
 }
 
 
-sub reset($) {
+sub reset {
 	my $dbh = shift;
 	my $table = shift;
 	if(! $yes) {
 		print "Are you sure you want to set all picked up tasks to available (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
+		if($ans !~ /Y.*/) { $dbh->disconnect(); if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $sql_delete = "UPDATE $table SET status = 0 WHERE status = 1";
 	my $sth = $dbh->prepare($sql_delete);
@@ -178,14 +213,14 @@ sub reset($) {
 	print "Tasks reset: $rows\n";
 }
 
-sub reset_all($) {
+sub reset_all {
 	my $dbh = shift;
 	my $table = shift;
 	if(! $yes) {
 		print "Are you sure you want to set _all_ tasks to available (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { exit 0; }
+		if($ans !~ /Y.*/) { $dbh->disconnect(); if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $sql_delete = "UPDATE $table SET status = 0 WHERE status != 0";
 	my $sth = $dbh->prepare($sql_delete);
@@ -195,14 +230,14 @@ sub reset_all($) {
 	print "Tasks reset: $rows\n";
 }
 
-sub nonzero_reset($) {
+sub nonzero_reset {
 	my $dbh = shift;
 	my $table = shift;
 	if(! $yes) {
 		print "Are you sure you want to set all completed non-zero exit code tasks to available (Y/n)? ";
 		my $ans = <STDIN>;
 		chomp $ans;
-		if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
+		if($ans !~ /Y.*/) { $dbh->disconnect(); if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } exit 0; }
 	}
 	my $sql_delete = "UPDATE $table SET status = 0 WHERE status = 2 AND return_code != 0";
 	my $sth = $dbh->prepare($sql_delete);
@@ -212,19 +247,65 @@ sub nonzero_reset($) {
 	print "Tasks reset: $rows\n";
 }
 
-sub show_sets() {
+sub get_sets {
 	my $dbh = shift;
+	my @sets = ();
 	my $select_sql = "SELECT relname FROM pg_class c WHERE c.relkind = 'r'";
 	my $sth = $dbh->prepare($select_sql);
 	$sth->execute() or die $DBI::errstr;
 	while(my ($name) = $sth->fetchrow_array()) {
 		next if $name !~ /$user.+/;
 		$name =~ s/$user//;
-		print "$name\n";
+		push @sets, $name;
 	}
+	return @sets;
 }
 
-sub reset_sched($) {
+sub get_sizes {
+	my $dbh = shift;
+	my $user = shift;
+	my %table_sizes_h = ();
+	my @sets = main::get_sets($dbh);
+	my %table_disp_h = ($user,'DEFAULT');
+	my $total_db_mb = 0;
+	foreach my $set (@sets) {
+		$table_disp_h{$user.$set} = $set;
+	}
+	foreach my $table (sort keys %table_disp_h) {
+		my $friendly = $table_disp_h{$table};
+		my $size_sql = "SELECT pg_relation_size('$table')";
+		my $sth_size = $dbh->prepare($size_sql);
+		$sth_size->execute() or die $DBI::errstr;
+		my ($table_size_b) = $sth_size->fetchrow_array();
+		my $table_size_mb = sprintf("%.2f", $table_size_b/1048576);
+		$table_sizes_h{$table}{$friendly} = $table_size_mb;
+		$total_db_mb = $total_db_mb + $table_size_mb;
+	}
+	return($total_db_mb,%table_sizes_h);
+}
+
+sub show_sizes {
+	my $dbh = shift;
+	my $user = shift;
+	my ($total_db_size,%table_disp_h) = main::get_sizes($dbh,$user);
+	print "Name                      Size in MB\n";
+	print "------------------------------------\n";
+	foreach my $table (sort keys %table_disp_h) {
+	foreach my $friendly (keys %{ $table_disp_h{$table} }) {
+		my $table_size_mb = $table_disp_h{$table}{$friendly};
+		format =
+@<<<<<<<<<<<<<<<<<<<<<<<    @>>>>>>>
+$friendly,     $table_size_mb
+.
+		write;
+	} }
+	print "------------------------------------\n";
+	my $remains = $max_db_usage_mb - $total_db_size;
+	if($remains < 0) { $remains = 0; }
+	print "Total Use: $total_db_size, Limit: $max_db_usage_mb, Remaining: $remains\n";
+}
+
+sub reset_sched {
 	my $dbh = shift;
 	my $table = shift;
 	my %running_jobs = ();
@@ -237,6 +318,7 @@ sub reset_sched($) {
 	if($pRc != 0) {
 		die "qstat -x exited abnormally (RC = $pRc)\n";
 	}
+	if(! $xmlout_jobs) { $yes = 1; main::reset($dbh,$table); }
 	my $parser_jobs = XML::LibXML->new();
 	my $doc_jobs = $parser_jobs->parse_string($xmlout_jobs);
 	my $query = "//Data/Job[job_state = 'R']";
@@ -300,15 +382,84 @@ sub show_running {
 	}
 }
 
+sub get_index_type {
+	my $dbh = shift;
+	my $table = shift;
+	my $index_prefix = $table.'_status_';
+	my $hs_index_query = "SELECT indexname FROM pg_indexes WHERE tablename = '$table'";
+	my $sth = $dbh->prepare($hs_index_query);
+	$sth->execute();
+	my $idx_type;
+	while( my($indexname) = $sth->fetchrow_array()) {
+		if($indexname =~ /$index_prefix[a-z]+/) {
+			($idx_type) = $indexname =~ /$index_prefix([a-z]+)/;
+		}
+	}
+	return $idx_type;
+}
 
-sub HELP_MESSAGE() {
+sub show_index_type {
+	my $dbh = shift;
+	my $table = shift;
+	print main::get_index_type($dbh,$table)."\n";
+}
+
+sub set_index_type {
+	my $dbh = shift;
+	my $table = shift;
+	my $ti_type = shift;
+	my $t_index_name = $table."_status_".$ti_type;
+	my $ci_type = main::get_index_type($dbh,$table);
+	my $c_index_name = $table."_status_".$ci_type;
+	if($ti_type eq $ci_type) {
+		print "ERROR: table already has index of type $ti_type\n";
+		$dbh->disconnect();
+		exit 1;
+	} else {
+		if(! $yes) {
+			main::stats($dbh,$table);
+			print "Changing the index type may take a long time with > 500K tasks. Proceed (Y/n)? ";
+			my $ans = <STDIN>;
+			chomp $ans;
+			if($ans !~ /Y.*/) { if($ans =~ /y.*/) { print "Must answer Y to confirm.\n"; } $dbh->disconnect(); exit 0; }
+		}
+		my $drop_i_query = "DROP INDEX $c_index_name";
+		my $sth_di = $dbh->prepare($drop_i_query);
+	        $sth_di->execute();
+		my $create_i_query = "CREATE INDEX $t_index_name ON $table USING $ti_type (status)";
+		my $sth_ci = $dbh->prepare($create_i_query);
+		$sth_ci->execute();
+		$dbh->do("COMMIT");
+		$dbh->{AutoCommit} = 1;
+		my $sql_vacuum = "VACUUM $table";
+		my $sth_vc = $dbh->prepare($sql_vacuum);
+		$sth_vc->execute() or die $sth_vc->errstr;
+	}
+}
+
+sub verify_table {
+	my $dbh = shift;
+	my $table = shift;
+	$table =~ tr/[A-Z]/[a-z]/;
+	my $ct_query = "SELECT relname FROM pg_class where relname = '$table'";
+	my $sth = $dbh->prepare($ct_query);
+	$sth->execute();
+	if($sth->fetchrow_array()) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+
+sub HELP_MESSAGE {
 	print "Usage: psu [SINGLE ACTION] [--sql-set setname]\n";
 	print "  ACTIONS\n";
 	print "    --load             load tasks from STDIN\n";
 	print "    --stats            show task counts\n";
-	print "    --show-sets        list additional job sets\n";
+	print "    --show-sets        list additional task sets\n";
+	print "    --show-sizes       show sizes of all task sets\n";
 	print "    --del              delete all tasks (add -y for no prompt)\n";
-	print "    --del-comp         delete all completed tasks (add -y for no prompt)\n";
 	print "    --reset            set picked up tasks to available (add -y for no prompt)\n";
 	print "    --reset-sched      set picked up tasks to available with scheduler data\n";
 	print "    --reset-all        set all tasks to available (add -y for no prompt)\n";
@@ -317,5 +468,7 @@ sub HELP_MESSAGE() {
 	print "    --show-comp        show completed tasks\n";
 	print "    --show-avail       show tasks that have not been picked up\n";
 	print "    --show-running     show tasks that are running/picked up\n";
+	print "    --show-index       show the index type\n";
+	print "    --set-index        set the index type [btree|hash] (ADVANCED USE ONLY)\n";
 	exit 0;
 }

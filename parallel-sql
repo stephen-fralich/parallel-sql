@@ -744,7 +744,7 @@ sub get_options_from_array {
 sub parse_options {
     # Returns: N/A
     # Defaults:
-    $Global::version = '20140922-sql-20160908';
+    $Global::version = '20140922-sql-20161212';
     $Global::progname = 'parallel';
     $Global::infinity = 2**31;
     $Global::debug = 0;
@@ -810,7 +810,7 @@ sub parse_options {
     if(defined $opt::r) { $Global::ignore_empty = 1; }
     if(defined $opt::verbose) { $Global::stderr_verbose = 1; }
     # sql
-    if(defined $opt::sql) { $Global::sql = 1; }
+    if(defined $opt::sql) { $Global::sql = 1; $Global::sql_empty = 0; }
     if(defined $opt::exitonterm) { $Global::exitonterm = 1; }
     if(defined $opt::sqlstats) { $Global::sqlstats = 1; }
     if(defined $opt::sqlset) { $Global::sqlset = $opt::sqlset; }
@@ -1042,7 +1042,7 @@ sub parse_options {
     	}
     	eval "use List::Util;";
     	if($@) {
-    		::error("List::Util module must be installed if using --sqlstats\n"); ::wait_and_exit(255); 
+    		::error("List::Util module must be installed if using --sql-stats\n"); ::wait_and_exit(255); 
     	}
     }
     if($Global::sqlnoretry) {
@@ -7266,6 +7266,7 @@ sub empty {
 	for my $fh (@{$self->{'fhs'}}) {
 		# sql
 		if($Global::sql) {
+			if($Global::sql_empty) { ::debug("run", "MultifileQueue->empty \$Global::sql_empty 1 "); return 1; }
 			my $termcaught = 0;
 			my $orig_term = $SIG{TERM};
 			$SIG{TERM} = sub {
@@ -7277,10 +7278,13 @@ sub empty {
 				$self->unget($sql_ret);
 				if($termcaught) { ::exit_on_term(); }
 				$SIG{TERM} = $orig_term;
+				::debug("run", "MultifileQueue->empty SQL 0 ");
 				return 0;
 			} else {
 				if($termcaught) { ::exit_on_term(); }
 				$SIG{TERM} = $orig_term;
+				::debug("run", "MultifileQueue->empty SQL 1 ");
+				$Global::sql_empty = 1;
 				return 1;
 			}
 		} else {
@@ -7408,15 +7412,16 @@ sub read_sql_arg_from_fh {
 	my $max_tries = 5;
 	my $min_us = 10;
 	my $max_us = 50;
-	my $trans_pre;
+	my $trans_pre = 0.0;
 	if($Global::sqlstats) {
-		if(not $Global::use{"Time::HiRes"}) {
-			if(eval "use Time::HiRes qw ( gettimeofday );") {
-				eval "sub TimeHiResgtd { return Time::HiRes::gettimeofday };";
-			} else {
+		if(not $Global::use{"Time::HiRes-sql"}) {
+			eval "use Time::HiRes qw ( gettimeofday );";
+			if($@) {
 				eval "sub TimeHiResgtd { return 0 };";
+			} else {
+				eval "sub TimeHiResgtd { return [Time::HiRes::gettimeofday] };";
+				$Global::use{"Time::HiRes-sql"} = 1;
 			}
-			$Global::use{"Time::HiRes"} = 1;
 		}
 		$trans_pre = TimeHiResgtd();
 	}
@@ -7470,7 +7475,8 @@ sub read_sql_arg_from_fh {
 		}
 	}
 	if($Global::sqlstats) {
-		my $trans_diff = Time::HiRes::tv_interval($trans_pre) * 1000;
+		my $trans_diff_raw = Time::HiRes::tv_interval($trans_pre);
+		my $trans_diff = $trans_diff_raw * 1000;
 		push @Global::sqlstats_pickup, $trans_diff;
 	}
 	return($command,$row_id);

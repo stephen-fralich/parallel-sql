@@ -16,7 +16,7 @@ GetOptions("create-set=s" => \$create_set,
            "del-set=s" => \$del_set,
            "initial" => \$initial,
            "y" => \$yes,
-          ) || &HELP_MESSAGE();
+          ) || main::HELP_MESSAGE();
 
 my $running_user = $ENV{SUDO_USER};
 if(! $running_user) { die "pssu must be run using sudo:  sudo pssu <options>\n"; }
@@ -43,10 +43,10 @@ my $gdbh = DBI->connect("DBI:Pg:database=$database;host=$host",
 my $table = $running_user;
 if($set) { $table = $running_user.$set; }
 
-if($create_set) { &create_set($gdbh,$create_set); }
-elsif($del_set) { &del_set($gdbh,$del_set); }
-elsif($initial) { &initial($gdbh,$running_user); }
-else { &HELP_MESSAGE(); }
+if($create_set) { main::create_set($gdbh,$create_set); }
+elsif($del_set) { main::del_set($gdbh,$del_set); }
+elsif($initial) { main::initial($gdbh,$running_user); }
+else { main::HELP_MESSAGE(); }
 
 $gdbh->disconnect();
 
@@ -150,7 +150,7 @@ sub count_sets {
 }
 
 
-sub HELP_MESSAGE() {
+sub HELP_MESSAGE {
 	print "Usage: pssu [SINGLE ACTION]\n";
 	print "  ACTIONS\n";
 	print "    --initial                 setup initial parallel_sql default table\n";
