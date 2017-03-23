@@ -59,8 +59,8 @@ sub create_set {
 	my $set_count = &count_sets($dbh);
 	if($set_count >= $max_sets) { print "Max set count $max_sets reached\n"; return 1; }
 	my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
-	my $index_name = $table.'_status_hash';
-	my $create_index = "CREATE INDEX $index_name ON $table USING hash (status)";
+	my $index_name = $table.'_status_btree';
+	my $create_index = "CREATE INDEX $index_name ON $table USING btree (status)";
 	my $set_owner = "ALTER TABLE $table OWNER TO $running_user";
 	my $sth_create = $dbh->prepare($create_table);
 	$sth_create->execute();
@@ -81,8 +81,8 @@ sub initial {
 	my $create_table = "CREATE TABLE $table ( rowid SERIAL PRIMARY KEY, status SMALLINT NOT NULL, command TEXT NOT NULL, create_ts BIGINT, get_ts BIGINT, finish_ts BIGINT, sched_id TEXT, return_code SMALLINT ) TABLESPACE parallel";
 	my $sth_create_t = $dbh->prepare($create_table);
 	$sth_create_t->execute();
-	my $index_name = $table.'_status_hash';
-	my $create_index = "CREATE INDEX $index_name ON $table USING hash (status)";
+	my $index_name = $table.'_status_btree';
+	my $create_index = "CREATE INDEX $index_name ON $table USING btree (status)";
 	my $sth_create_i = $dbh->prepare($create_index);
 	$sth_create_i->execute();
 	my $create_role = "CREATE ROLE $table WITH LOGIN PASSWORD '$password'";

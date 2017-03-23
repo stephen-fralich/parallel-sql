@@ -11,7 +11,9 @@ GetOptions("load" => \$load,
 	"stats" => \$stats,
 	"del" => \$delete,
 	"reset" => \$reset,
-	"reset-sched" => \$reset_sched,
+	"reset-sched" => \$reset_pbs,
+	"reset-slurm" => \$reset_slurm,
+	"reset-pbs" => \$reset_pbs,
 	"reset-all" => \$reset_all,
 	"del-comp" => \$delete_comp,
 	"show-nonzero" => \$nonzero,
@@ -68,7 +70,9 @@ elsif($show_sets) { main::show_sets($gdbh); }
 elsif($stats) { main::stats($gdbh,$table); }
 elsif($delete) { main::delete($gdbh,$table); }
 elsif($reset) { main::reset($gdbh,$table); }
-elsif($reset_sched) { main::reset_sched($gdbh,$table); }
+elsif($reset_pbs) { main::reset_pbs($gdbh,$table); }
+elsif($reset_sched) { main::reset_pbs($gdbh,$table); }
+elsif($reset_slurm) { main::reset_slurm($gdbh,$table); }
 elsif($reset_all) { main::reset_all($gdbh,$table); }
 elsif($delete_comp) { main::delete_comp($gdbh,$table); }
 elsif($nonzero) { main::nonzero($gdbh,$table); }
@@ -305,13 +309,13 @@ $friendly,     $table_size_mb
 	print "Total Use: $total_db_size, Limit: $max_db_usage_mb, Remaining: $remains\n";
 }
 
-sub reset_sched {
+sub reset_pbs {
 	my $dbh = shift;
 	my $table = shift;
 	my %running_jobs = ();
 	eval "use XML::LibXML;";
 	if($@) {
-		die "XML::LibXML module must be installed if using --reset-sched\n";
+		die "XML::LibXML module must be installed if using --reset-pbs or --reset-sched\n";
 	}
 	my $xmlout_jobs = `qstat -x`;
 	$pRc = $?;
@@ -326,6 +330,49 @@ sub reset_sched {
 		my ($jobido) = $jobo->getChildrenByTagName('Job_Id');
 		my $jobid = $jobido->to_literal;
 		$running_jobs{$jobid} = undef;
+	}
+	my $select_sql = "SELECT rowid,sched_id FROM $table WHERE status = 1";
+	my $sth = $dbh->prepare($select_sql);
+	$sth->execute() or die $DBI::errstr;
+	my @update_rowids = ();
+	while(my ($rowid,$db_sched_id) = $sth->fetchrow_array()) {
+		if($db_sched_id && ! exists $running_jobs{$db_sched_id}) {
+			push @update_rowids, $rowid;
+		}
+	}
+	my $rows = 0;
+	if (@update_rowids) {
+		foreach my $rowid (@update_rowids) {
+			my $update_sql = "UPDATE $table SET status = 0 WHERE rowid = ?";
+			my $sth = $dbh->prepare($update_sql);
+			$sth->execute($rowid);
+		}
+		$rows = $sth->rows;
+		$dbh->do("COMMIT");
+	}
+	print "Tasks reset: $rows\n";
+}
+
+sub reset_slurm {
+	my $dbh = shift;
+	my $table = shift;
+	my %running_jobs = ();
+	eval "use Slurm;";
+	if($@) {
+		die "Slurm module must be installed if using --reset-pbs or --reset-sched\n";
+	}
+	# Get running jobs from slurm in %running_jobs
+	my $slurm = Slurm::new();
+	my $resp = $slurm->load_jobs();
+	unless($resp) {
+		die "Failed to load job info: " . $slurm->strerror();
+	}
+	foreach my $job_h (@{$resp->{'job_array'}}) {
+		my $job_id = $job_h->{'job_id'};
+		my $job_state = $job_h->{'job_state'};
+		if($job_state == 1) {
+			$running_jobs{$job_id} = undef;
+		}
 	}
 	my $select_sql = "SELECT rowid,sched_id FROM $table WHERE status = 1";
 	my $sth = $dbh->prepare($select_sql);
@@ -461,7 +508,8 @@ sub HELP_MESSAGE {
 	print "    --show-sizes       show sizes of all task sets\n";
 	print "    --del              delete all tasks (add -y for no prompt)\n";
 	print "    --reset            set picked up tasks to available (add -y for no prompt)\n";
-	print "    --reset-sched      set picked up tasks to available with scheduler data\n";
+	print "    --reset-pbs        set picked up tasks to available with PBS scheduler data\n";
+	print "    --reset-slurm      set picked up tasks to available with Slurm scheduler data\n";
 	print "    --reset-all        set all tasks to available (add -y for no prompt)\n";
 	print "    --show-nonzero     show completed tasks with non-zero exit code\n";
 	print "    --reset-nonzero    set completed tasks with non-zero exit code to available\n";
