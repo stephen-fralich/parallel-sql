@@ -258,7 +258,7 @@ sub get_sets {
 	my $sth = $dbh->prepare($select_sql);
 	$sth->execute() or die $DBI::errstr;
 	while(my ($name) = $sth->fetchrow_array()) {
-		next if $name !~ /$user.+/;
+		next if $name !~ /^$user.+/;
 		$name =~ s/$user//;
 		push @sets, $name;
 	}
