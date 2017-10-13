@@ -143,7 +143,7 @@ sub count_sets {
 	my $sth = $dbh->prepare($select_sql);
 	$sth->execute() or die $DBI::errstr;
 	while(my ($name) = $sth->fetchrow_array()) {
-		next if $name !~ /$running_user.+/;
+		next if $name !~ /^$running_user.+/;
 		push @sets, $name;
 	}
 	return scalar(@sets);
